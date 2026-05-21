@@ -70,7 +70,7 @@ Launch the batch converter:
 uv run python gui.py
 ```
 
-![GUI](.\docs\GUI.png)
+![GUI](./docs/GUI.png)
 
 ### Input TIFF files
 
