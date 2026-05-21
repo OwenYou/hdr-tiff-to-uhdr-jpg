@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Native dependencies (cloned separately, built locally)
+libultrahdr/
+libjpeg-turbo/
+
+# Built DLLs
+*.dll
+*.lib
+*.exp
+*.exe
+
+# Test images and pipeline outputs (large binaries)
+test_files/
+
+# Editor / OS
+.vscode/
+*.DS_Store
+Thumbs.db

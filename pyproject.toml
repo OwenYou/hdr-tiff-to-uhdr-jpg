@@ -1,0 +1,10 @@
+[project]
+name = "20260521-hdr-gm-jpg"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "colour-science>=0.4.7",
+    "numpy>=2.4.6",
+    "opencolorio>=2.5.2",
+    "tifffile>=2026.5.15",
+]
