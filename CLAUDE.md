@@ -28,27 +28,27 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 
 ### Building the native dependencies
 
-The two DLLs (`uhdr.dll`, `jpeg62.dll`) sit next to `uhdr_ctypes.py` and are loaded at import time. They are built from the `libultrahdr/` and `libjpeg-turbo/` source trees (cloned separately; not tracked in this repo) using the helper batch files. **Both batch files call `vcvars64.bat` from `Visual Studio\18\Community` and use NASM at `C:\Program Files\NASM`; install paths are hard-coded to `C:\msvcinstalls`.**
+The two DLLs (`uhdr.dll`, `jpeg62.dll`) sit next to `uhdr_ctypes.py` and are loaded at import time. They are built from the `libultrahdr/` and `libjpeg-turbo/` source trees (cloned separately; not tracked in this repo) using the helper batch files in `scripts/`. **Both batch files call `vcvars64.bat` from `Visual Studio\18\Community` and use NASM at `C:\Program Files\NASM`; install paths are hard-coded to `C:\msvcinstalls`.**
 
 ```cmd
-_build_jpegturbo.bat        :: builds libjpeg-turbo, installs to C:\msvcinstalls
-_build_libultrahdr.bat      :: builds libultrahdr against C:\msvcinstalls
+scripts\_build_jpegturbo.bat        :: builds libjpeg-turbo, installs to C:\msvcinstalls
+scripts\_build_libultrahdr.bat      :: builds libultrahdr against C:\msvcinstalls
 ```
 
-`libultrahdr` is used from **upstream google/libultrahdr with no local patches**. It must be configured with `-DUHDR_WRITE_XMP=ON` so the output carries the legacy `hdrgm:` XMP for older viewer compatibility. The batch file already sets this. After rebuilding, copy `libultrahdr/build/uhdr.dll` and `C:\msvcinstalls\bin\jpeg62.dll` next to `uhdr_ctypes.py` (or run `_decode_check.bat` / `_smoke.bat` which stage them automatically).
+`libultrahdr` is used from **upstream google/libultrahdr with no local patches**. It must be configured with `-DUHDR_WRITE_XMP=ON` so the output carries the legacy `hdrgm:` XMP for older viewer compatibility. The batch file already sets this. After rebuilding, copy `libultrahdr/build/uhdr.dll` and `C:\msvcinstalls\bin\jpeg62.dll` next to `uhdr_ctypes.py` (or run `scripts\_decode_check.bat` / `scripts\_smoke.bat` which stage them automatically).
 
 ### Diagnostics / inspection helpers
 
-Each underscore-prefixed `.py` file is a one-off diagnostic script, not part of the production pipeline:
+Diagnostic Python scripts live in `tools/`; batch helpers live in `scripts/`:
 
 ```bash
-uv run python _inspect_jpg.py  <file.uhdr.jpg>   # JPEG marker map (one image)
-uv run python _inspect_full.py <file.uhdr.jpg>   # walks BOTH primary + secondary JPEGs;
-                                                 #   decodes ISO 21496-1 gain map metadata
-uv run python _dump_meta.py    <file.uhdr.jpg>   # XMP packets + raw ISO 21496-1 hex
-uv run python _dump_icc.py     <file.uhdr.jpg>   # extracts ICC profiles from primary + gain map
-_smoke.bat                                       # dumpbin /dependents + ctypes load test
-_decode_check.bat                                # runs ultrahdr_app.exe -m 1 on a known file
+uv run python tools/_inspect_jpg.py  <file.uhdr.jpg>   # JPEG marker map (one image)
+uv run python tools/_inspect_full.py <file.uhdr.jpg>   # walks BOTH primary + secondary JPEGs;
+                                                       #   decodes ISO 21496-1 gain map metadata
+uv run python tools/_dump_meta.py    <file.uhdr.jpg>   # XMP packets + raw ISO 21496-1 hex
+uv run python tools/_dump_icc.py     <file.uhdr.jpg>   # extracts ICC profiles from primary + gain map
+scripts\_smoke.bat                                     # dumpbin /dependents + ctypes load test
+scripts\_decode_check.bat                              # runs ultrahdr_app.exe -m 1 on a known file
 ```
 
 There is no test suite.
@@ -111,4 +111,4 @@ An Ultra HDR JPEG is two concatenated JPEGs: primary (base SDR image) then secon
 - **APP2 `urn:iso:std:iso:ts:21496:-1`** on the secondary carrying the ISO 21496-1 gain map metadata (per-channel `gainMapMin/Max`, `gamma`, `baseOffset/altOffset`, `baseHdrHeadroom`, `alternateHdrHeadroom`, multichannel flag, `use_base_colour_space` flag).
 - **APP2 `ICC_PROFILE`** segments (often split across multiple APP2s; `_dump_icc.py` reassembles them by chunk index/count).
 
-`_inspect_full.py` is the authoritative reference for the ISO 21496-1 binary layout — its `parse_iso21496` mirrors `libultrahdr/lib/src/gainmapmetadata.cpp::encodeGainmapMetadata`. Consult it before changing anything that touches gain map metadata.
+`tools/_inspect_full.py` is the authoritative reference for the ISO 21496-1 binary layout — its `parse_iso21496` mirrors `libultrahdr/lib/src/gainmapmetadata.cpp::encodeGainmapMetadata`. Consult it before changing anything that touches gain map metadata.

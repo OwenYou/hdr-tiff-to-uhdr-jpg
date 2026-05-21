@@ -1,5 +1,8 @@
 """BT.2020 PQ color conversion utilities used by the Ultra HDR pipeline."""
 
+import warnings
+warnings.filterwarnings("ignore", module=r"colour")
+
 import numpy as np
 import colour
 import PyOpenColorIO as OCIO
