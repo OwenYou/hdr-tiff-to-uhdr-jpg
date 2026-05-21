@@ -24,6 +24,9 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 #   --gainmap-scale 1    gain map downscale factor 1..128 (default: 1)
 #   --gainmap-gamma 1.0  encoding gamma applied to the gain map (default: 1.0)
 #   --peak-nits 1000     target HDR display peak in nits 203..10000 (default: 1000)
+
+# Launch the batch GUI (tkinter; wraps convert.py via subprocess)
+uv run python gui.py
 ```
 
 ### Building the native dependencies
@@ -47,6 +50,8 @@ uv run python tools/_inspect_full.py <file.uhdr.jpg>   # walks BOTH primary + se
                                                        #   decodes ISO 21496-1 gain map metadata
 uv run python tools/_dump_meta.py    <file.uhdr.jpg>   # XMP packets + raw ISO 21496-1 hex
 uv run python tools/_dump_icc.py     <file.uhdr.jpg>   # extracts ICC profiles from primary + gain map
+uv run python tools/_compare_icc.py  <a.jpg> <b.jpg>  # side-by-side ICC tag comparison
+uv run python tools/_downscale_tiff.py <in.tif> <out.tif> <WxH>  # linear-light PQ TIFF downscale
 scripts\_smoke.bat                                     # dumpbin /dependents + ctypes load test
 scripts\_decode_check.bat                              # runs ultrahdr_app.exe -m 1 on a known file
 ```
@@ -92,6 +97,7 @@ primary and gain-map JPEGs in the UHDR container. JPEG scan data byte-stuffs `0x
 ### Module responsibilities
 
 - **`convert.py`** — argparse + I/O, `pack_rgba1010102` / `_compressed_image` helpers, App-0 and API-3 encoder calls, `extract_primary_jpeg`.
+- **`gui.py`** — tkinter batch GUI. Spawns `convert.py` as a subprocess per file, runs up to 8 jobs in parallel via `ThreadPoolExecutor`, and streams per-file log output back to the main thread via a `queue.Queue`. Screenshot at `docs/GUI.png`.
 - **`color.py`** — `bt2020_pq_to_p3_pq_uint16`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC gamut compression. Uses `colour-science` for ST.2084 EOTF / gamut-matrix conversions and `PyOpenColorIO` for the RGC fixed-function transform. OCIO CPU processor is lazily built and cached in a module-level global.
 - **`uhdr_ctypes.py`** — `ctypes` binding for `uhdr.dll`. Loads the DLL via `os.add_dll_directory`, defines `UhdrRawImage` / `UhdrCompressedImage` / `UhdrErrorInfo` matching `ultrahdr_api.h`, asserts `sizeof(UhdrRawImage) == 64` to catch ABI drift, and exposes both the raw-image (`uhdr_enc_set_raw_image`) and compressed-image (`uhdr_enc_set_compressed_image`) encoder paths.
 
