@@ -202,43 +202,51 @@ def main() -> int:
         print(f"error: {args.output} exists (use --force to overwrite)", file=sys.stderr)
         return 2
 
-    t0 = time.perf_counter()
+    steps: list[tuple[str, float]] = []
+
+    def lap(label: str, t_start: float) -> float:
+        elapsed = time.perf_counter() - t_start
+        steps.append((label, elapsed))
+        return time.perf_counter()
+
+    t = time.perf_counter()
     rgb16 = load_pq_tiff(args.input)
     H, W = rgb16.shape[:2]
-    if args.verbose:
-        print(f"loaded {args.input}: {W}x{H} uint16", file=sys.stderr)
+    t = lap(f"load TIFF ({W}x{H})", t)
 
     # Step 1: BT.2020 PQ -> Display P3 PQ (ACES 1.3 gamut compression)
-    t1 = time.perf_counter()
-    p3_pq_16 = color.bt2020_pq_to_p3_pq_uint16(rgb16)
-    t2 = time.perf_counter()
+    p3_pq_16, color_timings = color.bt2020_pq_to_p3_pq_uint16(rgb16)
+    for name, secs in color_timings.items():
+        steps.append((f"  color/{name}", secs))
+    t = time.perf_counter()
 
     # Step 2: App-0 — tone-map P3 PQ internally, extract primary JPEG (P3 SDR base)
     packed_p3_hdr = pack_rgba1010102(p3_pq_16)
+    t = lap("pack RGBA1010102", t)
+
     app0_bytes = _encode_app0(packed_p3_hdr, args.quality)
+    t = lap(f"App-0 encode ({len(app0_bytes)/1e3:.0f} KB)", t)
+
     sdr_jpeg = extract_primary_jpeg(app0_bytes)
-    t3 = time.perf_counter()
-    if args.verbose:
-        print(
-            f"App-0: {len(app0_bytes)} bytes total, "
-            f"primary JPEG {len(sdr_jpeg)} bytes",
-            file=sys.stderr,
-        )
+    t = lap(f"extract primary JPEG ({len(sdr_jpeg)/1e3:.0f} KB)", t)
 
     # Step 3: API-3 — P3 PQ raw HDR + P3 SDR compressed -> RGB gain map UHDR
     jpg = _encode_api3(packed_p3_hdr, sdr_jpeg, args)
-    t4 = time.perf_counter()
+    t = lap(f"API-3 encode ({len(jpg)/1e3:.0f} KB)", t)
 
     with open(args.output, "wb") as f:
         f.write(jpg)
+    t = lap("write output", t)
 
-    if args.verbose:
-        print(
-            f"load={t1-t0:.2f}s  gamut={t2-t1:.2f}s  "
-            f"app0={t3-t2:.2f}s  api3={t4-t3:.2f}s  "
-            f"out={len(jpg)/1e6:.2f}MB",
-            file=sys.stderr,
-        )
+    total = sum(s for _, s in steps)
+    col_w = max(len(n) for n, _ in steps)
+    print(f"\n{'Step':<{col_w}}   Time (s)   %", file=sys.stderr)
+    print("-" * (col_w + 18), file=sys.stderr)
+    for name, secs in steps:
+        print(f"{name:<{col_w}}   {secs:7.3f}s  {100*secs/total:5.1f}%", file=sys.stderr)
+    print("-" * (col_w + 18), file=sys.stderr)
+    print(f"{'TOTAL':<{col_w}}   {total:7.3f}s  100.0%", file=sys.stderr)
+
     print(args.output)
     return 0
 
