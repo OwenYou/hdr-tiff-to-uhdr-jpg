@@ -5,6 +5,7 @@ encoder surface needed for the API-0 (HDR-only) path.
 """
 
 import os
+import sys
 import ctypes
 from ctypes import (
     Structure, POINTER, byref,
@@ -86,13 +87,28 @@ assert ctypes.sizeof(UhdrRawImage) == 64, (
 
 # --- DLL load -------------------------------------------------------------
 _here = os.path.dirname(os.path.abspath(__file__))
-_dll_dir_handle = os.add_dll_directory(_here)  # keep reference alive
-_dll_path = os.path.join(_here, "uhdr.dll")
-if not os.path.exists(_dll_path):
-    raise FileNotFoundError(
-        f"uhdr.dll not found at {_dll_path}. Build libultrahdr and copy "
-        "uhdr.dll + jpeg62.dll next to this module."
-    )
+if sys.platform == "win32":
+    _dll_dir_handle = os.add_dll_directory(_here)  # keep reference alive; Windows-only
+    _dll_path = os.path.join(_here, "uhdr.dll")
+    if not os.path.exists(_dll_path):
+        raise FileNotFoundError(
+            f"uhdr.dll not found at {_dll_path}. Build libultrahdr and copy "
+            "uhdr.dll + jpeg62.dll next to this module."
+        )
+elif sys.platform == "darwin":
+    _dll_path = os.path.join(_here, "libuhdr.dylib")
+    if not os.path.exists(_dll_path):
+        raise FileNotFoundError(
+            f"libuhdr.dylib not found at {_dll_path}. Run scripts/_build_libultrahdr_macos.sh "
+            "to build libultrahdr and copy libuhdr.dylib + libjpeg.62.dylib next to this module."
+        )
+else:
+    _dll_path = os.path.join(_here, "libuhdr.so")
+    if not os.path.exists(_dll_path):
+        raise FileNotFoundError(
+            f"libuhdr.so not found at {_dll_path}. Build libultrahdr and copy "
+            "libuhdr.so + libjpeg.so.62 next to this module."
+        )
 uhdr = ctypes.CDLL(_dll_path)
 
 

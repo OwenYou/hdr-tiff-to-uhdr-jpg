@@ -213,9 +213,10 @@ class App(tk.Tk):
         frm_log = ttk.LabelFrame(self, text="Log")
         frm_log.pack(fill="both", expand=True, **PAD)
 
+        _mono_font = ("Menlo", 10) if sys.platform == "darwin" else ("Consolas", 9)
         self._log = scrolledtext.ScrolledText(
             frm_log, height=8, state="disabled",
-            font=("Consolas", 9), wrap="word",
+            font=_mono_font, wrap="word",
         )
         self._log.pack(fill="both", expand=True, padx=4, pady=4)
 

@@ -31,14 +31,33 @@ uv run python gui.py
 
 ### Building the native dependencies
 
-The two DLLs (`uhdr.dll`, `jpeg62.dll`) sit next to `uhdr_ctypes.py` and are loaded at import time. They are built from the `libultrahdr/` and `libjpeg-turbo/` source trees (cloned separately; not tracked in this repo) using the helper batch files in `scripts/`. **Both batch files call `vcvars64.bat` from `Visual Studio\18\Community` and use NASM at `C:\Program Files\NASM`; install paths are hard-coded to `C:\msvcinstalls`.**
+Pre-built runtime libraries for both platforms are committed to the repo and sit next to `uhdr_ctypes.py`: `uhdr.dll` + `jpeg62.dll` on Windows, `libuhdr.dylib` + `libjpeg.62.dylib` on macOS. No build step is required to run the pipeline on either platform.
+
+`libultrahdr` is used from **upstream google/libultrahdr with no local patches**. It must be configured with `-DUHDR_WRITE_XMP=ON` so the output carries the legacy `hdrgm:` XMP for older viewer compatibility. All build scripts already set this flag.
+
+Rebuild only when updating or patching the native source. Source trees (`libultrahdr/`, `libjpeg-turbo/`) are cloned separately and not tracked in this repo.
+
+#### Windows (rebuild)
+
+**Both batch files call `vcvars64.bat` from `Visual Studio\18\Community` and use NASM at `C:\Program Files\NASM`; install paths are hard-coded to `C:\msvcinstalls`.**
 
 ```cmd
 scripts\_build_jpegturbo.bat        :: builds libjpeg-turbo, installs to C:\msvcinstalls
 scripts\_build_libultrahdr.bat      :: builds libultrahdr against C:\msvcinstalls
 ```
 
-`libultrahdr` is used from **upstream google/libultrahdr with no local patches**. It must be configured with `-DUHDR_WRITE_XMP=ON` so the output carries the legacy `hdrgm:` XMP for older viewer compatibility. The batch file already sets this. After rebuilding, copy `libultrahdr/build/uhdr.dll` and `C:\msvcinstalls\bin\jpeg62.dll` next to `uhdr_ctypes.py` (or run `scripts\_decode_check.bat` / `scripts\_smoke.bat` which stage them automatically).
+After rebuilding, copy `libultrahdr/build/uhdr.dll` and `C:\msvcinstalls\bin\jpeg62.dll` next to `uhdr_ctypes.py` (or run `scripts\_decode_check.bat` / `scripts\_smoke.bat` which stage them automatically).
+
+#### macOS (rebuild)
+
+Prerequisites: Xcode Command Line Tools (`xcode-select --install`), `cmake`, `git`. Ninja is used automatically when available (`brew install ninja`).
+
+```bash
+bash scripts/_build_jpegturbo_macos.sh     # builds libjpeg-turbo, installs to ~/uhdr-deps
+bash scripts/_build_libultrahdr_macos.sh   # builds libultrahdr, fixes rpath, copies to project dir
+```
+
+The libultrahdr script runs `install_name_tool` to rewrite the embedded JPEG dependency to `@loader_path/libjpeg.62.dylib`, so both dylibs resolve each other by relative path without `DYLD_LIBRARY_PATH`. Source trees are cloned (if absent) from the parent of the project directory.
 
 ### Diagnostics / inspection helpers
 

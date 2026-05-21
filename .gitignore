@@ -7,13 +7,16 @@ __pycache__/
 libultrahdr/
 libjpeg-turbo/
 
-# Built DLLs (exclude the two runtime DLLs needed to run the pipeline)
+# Built artifacts — keep only the pre-built runtime libraries needed to run the pipeline
 *.lib
 *.exp
 *.exe
 *.dll
 !uhdr.dll
 !jpeg62.dll
+*.dylib
+!libuhdr.dylib
+!libjpeg.62.dylib
 
 # Test images and pipeline outputs (large binaries)
 test_files/

@@ -12,15 +12,21 @@ The output carries a multi-channel (RGB) gain map with both renditions in Displa
 |---|---|
 | Python ≥ 3.12 | via `uv` |
 | [uv](https://docs.astral.sh/uv/) | package/venv manager |
-| `uhdr.dll` + `jpeg62.dll` | included in the repo next to `uhdr_ctypes.py`; rebuild only needed if you change the native source |
+| Native library | see platform notes below |
 
 Python package dependencies (`colour-science`, `numpy`, `opencolorio`, `tifffile`) are declared in `pyproject.toml` and installed automatically by `uv sync`. No manual `pip install` step needed.
 
 `tkinter` (used by `gui.py`) is part of the Python standard library — no extra install.
 
-### To build the native DLLs from source
+**Windows** — `uhdr.dll` + `jpeg62.dll` are pre-built and committed to the repo; no build step required.
 
-Only needed if you want to rebuild from source (e.g. after patching libultrahdr). Pre-built DLLs are already included in the repo. All paths are hard-coded to a specific machine layout.
+**macOS** — `libuhdr.dylib` + `libjpeg.62.dylib` are pre-built and committed to the repo; no build step required.
+
+### To rebuild the native library from source
+
+Only needed if you want to update or patch the native source. Pre-built libraries for Windows and macOS are already committed to the repo.
+
+#### Windows prerequisites
 
 | Dependency | Required path / version |
 |---|---|
@@ -29,6 +35,16 @@ Only needed if you want to rebuild from source (e.g. after patching libultrahdr)
 | CMake + Ninja | on `PATH` (installed with VS or separately) |
 | libjpeg-turbo source tree | `libjpeg-turbo/` subdirectory (cloned separately, not tracked) |
 | libultrahdr source tree | `libultrahdr/` subdirectory (cloned separately, not tracked) |
+
+#### macOS prerequisites
+
+| Dependency | How to install |
+|---|---|
+| Xcode Command Line Tools | `xcode-select --install` |
+| CMake | `brew install cmake` |
+| Ninja (optional, speeds up build) | `brew install ninja` |
+| libjpeg-turbo source tree | cloned automatically by the build script |
+| libultrahdr source tree | cloned automatically by the build script |
 
 ## Quick start
 
@@ -95,9 +111,13 @@ Leave the field blank to write each output file next to its source TIFF (e.g. `f
 
 Click **Convert N files** to start. The button changes to **Cancel** while a batch is running; clicking it skips any not-yet-started files and lets in-flight encodes finish. Progress is shown in two bars: a per-file activity bar (animates while encodes are running) and an overall files-completed bar. The log panel below shows each file's per-step timing table as reported by `convert.py`.
 
-## Building the native DLLs
+## Building the native library
 
-Pre-built DLLs are included in the repo — skip this section unless you need to rebuild from source. The two DLLs (`uhdr.dll`, `jpeg62.dll`) must sit next to `uhdr_ctypes.py`. Helper batch files in `scripts/` automate the build. Both call `vcvars64.bat` from Visual Studio 2022 Community and install to `C:\msvcinstalls`.
+`libultrahdr` must be configured with `-DUHDR_WRITE_XMP=ON` (all build scripts already set this) so the output carries the legacy `hdrgm:` XMP for older viewer compatibility.
+
+### Windows
+
+Both batch files call `vcvars64.bat` from Visual Studio 2022 Community and install intermediate files to `C:\msvcinstalls`.
 
 ```cmd
 :: 1. Build libjpeg-turbo (installs to C:\msvcinstalls)
@@ -109,7 +129,19 @@ scripts\_build_libultrahdr.bat
 
 After building, copy `libultrahdr\build\uhdr.dll` and `C:\msvcinstalls\bin\jpeg62.dll` next to `uhdr_ctypes.py`.
 
-`libultrahdr` must be configured with `-DUHDR_WRITE_XMP=ON` (the batch file already sets this) so the output carries the legacy `hdrgm:` XMP for older viewer compatibility.
+### macOS
+
+Both source trees are cloned automatically from the parent of the project directory if they are not already present. Intermediate libraries install to `~/uhdr-deps`.
+
+```bash
+# 1. Build libjpeg-turbo (installs to ~/uhdr-deps)
+bash scripts/_build_jpegturbo_macos.sh
+
+# 2. Build libultrahdr, fix rpath, copy dylibs next to uhdr_ctypes.py
+bash scripts/_build_libultrahdr_macos.sh
+```
+
+The libultrahdr script rewrites the embedded JPEG dependency in `libuhdr.dylib` to `@loader_path/libjpeg.62.dylib` using `install_name_tool`, so both dylibs resolve each other by relative path without `DYLD_LIBRARY_PATH`.
 
 ## Pipeline overview
 
@@ -178,7 +210,7 @@ scripts\_decode_check.bat
 | `convert.py` | CLI entry point, `pack_rgba1010102`, App-0 and API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
 | `color.py` | `bt2020_pq_to_p3_pq_uint16`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC |
-| `uhdr_ctypes.py` | `ctypes` bindings for `uhdr.dll`; `UhdrRawImage` / `UhdrCompressedImage` structs |
+| `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure
 
