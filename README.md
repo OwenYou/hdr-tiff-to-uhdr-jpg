@@ -12,15 +12,15 @@ The output carries a multi-channel (RGB) gain map with both renditions in Displa
 |---|---|
 | Python ≥ 3.12 | via `uv` |
 | [uv](https://docs.astral.sh/uv/) | package/venv manager |
-| `uhdr.dll` + `jpeg62.dll` | placed next to `uhdr_ctypes.py` (see build instructions below) |
+| `uhdr.dll` + `jpeg62.dll` | included in the repo next to `uhdr_ctypes.py`; rebuild only needed if you change the native source |
 
-Python package dependencies (`colour-science`, `numpy`, `opencolorio`, `tifffile`) are declared in `pyproject.toml` and installed automatically by `uv run`. No manual `pip install` step needed.
+Python package dependencies (`colour-science`, `numpy`, `opencolorio`, `tifffile`) are declared in `pyproject.toml` and installed automatically by `uv sync`. No manual `pip install` step needed.
 
 `tkinter` (used by `gui.py`) is part of the Python standard library — no extra install.
 
 ### To build the native DLLs from source
 
-Only needed if you don't have pre-built DLLs. All paths are hard-coded to a specific machine layout.
+Only needed if you want to rebuild from source (e.g. after patching libultrahdr). Pre-built DLLs are already included in the repo. All paths are hard-coded to a specific machine layout.
 
 | Dependency | Required path / version |
 |---|---|
@@ -97,7 +97,7 @@ Click **Convert N files** to start. The button changes to **Cancel** while a bat
 
 ## Building the native DLLs
 
-The two DLLs (`uhdr.dll`, `jpeg62.dll`) must sit next to `uhdr_ctypes.py`. Helper batch files in `scripts/` automate the build. Both call `vcvars64.bat` from Visual Studio 2022 Community and install to `C:\msvcinstalls`.
+Pre-built DLLs are included in the repo — skip this section unless you need to rebuild from source. The two DLLs (`uhdr.dll`, `jpeg62.dll`) must sit next to `uhdr_ctypes.py`. Helper batch files in `scripts/` automate the build. Both call `vcvars64.bat` from Visual Studio 2022 Community and install to `C:\msvcinstalls`.
 
 ```cmd
 :: 1. Build libjpeg-turbo (installs to C:\msvcinstalls)
