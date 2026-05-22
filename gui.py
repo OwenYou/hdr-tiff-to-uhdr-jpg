@@ -17,8 +17,10 @@ PROJECT_DIR = Path(__file__).parent
 
 _MSG_LOG        = "log"
 _MSG_FILE_START = "file_start"   # payload: name
-_MSG_FILE_DONE  = "file_done"    # payload: (done_1based, total, ok, name)
+_MSG_FILE_DONE  = "file_done"    # payload: (done_1based, total, status, src_path)
 _MSG_ALL_DONE   = "all_done"
+
+_MAX_RETRIES = 1  # auto-retry each failed job this many times
 
 
 # ── Worker ───────────────────────────────────────────────────────────────────
@@ -29,11 +31,11 @@ def _run_one(
     opts: dict,
     q: queue.Queue,
     cancel: threading.Event,
-) -> tuple[bool, Path]:
+) -> tuple[str, Path]:
     """Encode one file. Buffers all log text and emits it as a single block."""
     if cancel.is_set():
         q.put((_MSG_LOG, f"\n[skipped]  {src.name}\n"))
-        return False, src
+        return "skipped", src
 
     dst_dir = out_dir if out_dir else src.parent
     dst = dst_dir / f"{src.stem}.uhdr.jpg"
@@ -51,8 +53,8 @@ def _run_one(
     if opts["force"]:
         cmd.append("--force")
 
-    ok = False
     lines: list[str] = [f"\n── {src.name}  →  {dst.name} ──\n"]
+    ok = False
     try:
         result = subprocess.run(
             cmd,
@@ -73,7 +75,7 @@ def _run_one(
         lines.append(f"  EXCEPTION: {exc}\n")
 
     q.put((_MSG_LOG, "".join(lines)))
-    return ok, src
+    return ("ok" if ok else "error"), src
 
 
 def _convert_worker(
@@ -90,9 +92,9 @@ def _convert_worker(
         futures = {exe.submit(_run_one, src, out_dir, opts, q, cancel): src
                    for src in files}
         for fut in as_completed(futures):
-            ok, src = fut.result()
+            status, src = fut.result()
             done += 1
-            q.put((_MSG_FILE_DONE, (done, total, ok, src.name)))
+            q.put((_MSG_FILE_DONE, (done, total, status, src)))
     q.put((_MSG_ALL_DONE, None))
 
 
@@ -110,6 +112,10 @@ class App(tk.Tk):
         self._after_id: str | None = None
         self._in_flight: int = 0
         self._done_count: int = 0
+        self._success_count: int = 0
+        self._failed_files: list[Path] = []
+        self._retry_count: int = 0
+        self._path_to_idx: dict[Path, int] = {}
         self._build_ui()
         self._update_convert_btn()
 
@@ -303,6 +309,12 @@ class App(tk.Tk):
         self._status_var.set(f"Starting  ({opts['jobs']} parallel job{'s' if opts['jobs'] != 1 else ''})…")
         self._in_flight = 0
         self._done_count = 0
+        self._success_count = 0
+        self._failed_files = []
+        self._retry_count = 0
+        self._path_to_idx = {p: i for i, p in enumerate(self._files)}
+        for i in range(len(self._files)):
+            self._listbox.itemconfig(i, bg="", fg="")
         self._log_clear()
         self._convert_btn.config(text="Cancel", command=self._cancel, state="normal")
         self._cancel_event.clear()
@@ -334,14 +346,28 @@ class App(tk.Tk):
                         f"{self._done_count} / {total} done"
                     )
                 elif kind == _MSG_FILE_DONE:
-                    done, tot, ok, name = payload
+                    done, tot, status, src = payload
                     self._in_flight = max(0, self._in_flight - 1)
                     self._done_count = done
                     self._overall_bar["value"] = done
-                    self._overall_label.config(text=f"{done} / {tot}")
-                    mark = "✓" if ok else "✗"
+                    idx = self._path_to_idx.get(src)
+                    if status == "ok":
+                        self._success_count += 1
+                        mark = "✓"
+                        if idx is not None:
+                            self._listbox.itemconfig(idx, bg="#d4edda", fg="#155724")
+                    elif status == "error":
+                        self._failed_files.append(src)
+                        mark = "✗"
+                        if idx is not None:
+                            self._listbox.itemconfig(idx, bg="#f8d7da", fg="#721c24")
+                    else:
+                        mark = "—"
+                    n_err = len(self._failed_files)
+                    label = f"{self._success_count}✓" + (f"  {n_err}✗" if n_err else "") + f"  / {tot}"
+                    self._overall_label.config(text=label)
                     self._status_var.set(
-                        f"  {mark} {name}  |  "
+                        f"  {mark} {src.name}  |  "
                         f"{self._in_flight} in flight  |  {done} / {tot} done"
                     )
                 elif kind == _MSG_ALL_DONE:
@@ -354,14 +380,63 @@ class App(tk.Tk):
     def _on_done(self) -> None:
         self._cur_bar.stop()
         self._cur_bar.config(mode="determinate", value=100)
-        n = len(self._files)
-        self._status_var.set(f"Done — {n} file{'s' if n != 1 else ''} processed.")
+
+        if self._failed_files and self._retry_count < _MAX_RETRIES and not self._cancel_event.is_set():
+            self._start_retry()
+            return
+
+        n_total = len(self._files)
+        n_fail = len(self._failed_files)
+        n_ok = self._success_count
+        if n_fail == 0:
+            msg = f"Done — {n_ok} file{'s' if n_ok != 1 else ''} converted."
+        else:
+            retry_note = f" (retried {_MAX_RETRIES}×)" if self._retry_count else ""
+            msg = f"Done — {n_ok} succeeded,  {n_fail} failed{retry_note}."
+        self._status_var.set(msg)
         self._convert_btn.config(
-            text=f"Convert  {n} file{'s' if n != 1 else ''}",
+            text=f"Convert  {n_total} file{'s' if n_total != 1 else ''}",
             command=self._start,
             state="normal",
         )
         self._after_id = None
+
+    def _start_retry(self) -> None:
+        self._retry_count += 1
+        files_to_retry = list(self._failed_files)
+        self._failed_files = []
+        self._success_count = 0
+        n = len(files_to_retry)
+
+        for src in files_to_retry:
+            idx = self._path_to_idx.get(src)
+            if idx is not None:
+                self._listbox.itemconfig(idx, bg="#fff3cd", fg="#856404")
+
+        out_str = self._out_var.get().strip()
+        out_dir = Path(out_str) if out_str else None
+        opts = self._collect_opts()
+        jobs = opts["jobs"]
+
+        self._overall_bar.config(maximum=n, value=0)
+        self._overall_label.config(text=f"0 / {n}")
+        self._cur_bar.config(mode="indeterminate", value=0)
+        self._cur_bar.start(12)
+        self._status_var.set(f"Retrying {n} failed file{'s' if n != 1 else ''}…")
+        self._in_flight = 0
+        self._done_count = 0
+        self._log_append(f"\n── Retry {self._retry_count} — {n} file{'s' if n != 1 else ''} ──\n")
+        self._cancel_event.clear()
+        self._convert_btn.config(text="Cancel", command=self._cancel, state="normal")
+
+        self._thread = threading.Thread(
+            target=_convert_worker,
+            args=(files_to_retry, out_dir, opts, self._queue,
+                  self._cancel_event, jobs),
+            daemon=True,
+        )
+        self._thread.start()
+        self._after_id = self.after(80, self._poll)
 
     # ── Log helpers ──────────────────────────────────────────────────────────
 
