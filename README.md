@@ -14,7 +14,7 @@ The output carries a multi-channel (RGB) gain map with both renditions in Displa
 | [uv](https://docs.astral.sh/uv/) | package/venv manager |
 | Native library | see platform notes below |
 
-Python package dependencies (`colour-science`, `numpy`, `opencolorio`, `tifffile`) are declared in `pyproject.toml` and installed automatically by `uv sync`. No manual `pip install` step needed.
+Python package dependencies (`colour-science`, `numpy`, `opencolorio`, `tifffile`, `tkinterdnd2`) are declared in `pyproject.toml` and installed automatically by `uv sync`. No manual `pip install` step needed.
 
 `tkinter` (used by `gui.py`) is part of the Python standard library — no extra install.
 
@@ -90,7 +90,7 @@ uv run python gui.py
 
 ### Input TIFF files
 
-Click **Add files…** to open a file picker and select one or more `.tif`/`.tiff` files. The list supports multi-selection (Ctrl-click, Shift-click). To remove entries, select them and click **Remove selected**, or click **Clear all** to reset the list. The **Convert** button shows the number of queued files and stays disabled until at least one file is added.
+Drag `.tif`/`.tiff` files from Explorer (Windows) or Finder (macOS) directly onto the file list to add them. Alternatively, click **Add files…** to open a file picker. The list supports multi-selection (Ctrl-click, Shift-click). To remove entries, select them and click **Remove selected**, or click **Clear all** to reset the list. The **Convert** button shows the number of queued files and stays disabled until at least one file is added.
 
 ### Output folder
 
