@@ -193,6 +193,7 @@ def bt2020_pq_to_p3_pq_uint16(
 
 def p3_pq_to_sdr_rgba8888(
     packed_p3_hdr: np.ndarray,
+    use_lut: bool = True,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """RGBA1010102 uint32 (H,W) → RGBA8888 uint32 (H,W) using libultrahdr's tone map.
 
@@ -200,17 +201,18 @@ def p3_pq_to_sdr_rgba8888(
     (ReinhardMap in jpegr.cpp), operating on exactly the same 10-bit signal values that
     libultrahdr sees (getRgba1010102Pixel divides by 1023.0, not 65535.0).
 
-    Pipeline (three fused stages — all non-separable ops baked into the OCIO 3D LUT):
-      unpack 10-bit channels / 1023.0  [unpack_10bit]
-      → fused OCIO 3D LUT: PQ EOTF × headroom + Reinhard + γ 2.2 OETF  [ocio_lut3d]
-      → ×255 + 0.5, clip → uint8, pack as RGBA8888 uint32  [pack_rgba8888]
+    use_lut=True  (default): fused OCIO 3D LUT with tetrahedral interpolation —
+      unpack + PQ EOTF × headroom + Reinhard + γ 2.2 OETF in one AVX pass.
+    use_lut=False (parametric): explicit NumPy steps that exactly reproduce the
+      libultrahdr formulae; slower but no LUT approximation.
 
     Returns (rgba_u32, timings) where rgba_u32 is (H,W) uint32 C-contiguous.
     """
     H, W = packed_p3_hdr.shape
     timings: dict[str, float] = {}
 
-    proc = _build_tonemap_processor()
+    if use_lut:
+        proc = _build_tonemap_processor()  # pre-warm cache before timing starts
 
     # Unpack 10-bit channels and normalise to [0, 1] PQ signal space.
     # Matches getRgba1010102Pixel in gainmapmath.cpp: float(packed & 0x3ff) / 1023.0f
@@ -223,12 +225,35 @@ def p3_pq_to_sdr_rgba8888(
     )
     timings["unpack_10bit"] = time.perf_counter() - t
 
-    # Apply fused OCIO 3D LUT: PQ EOTF + Reinhard + γ 2.2 OETF in one AVX pass.
-    # f32 is modified in-place; output is SDR gamma-encoded values in [0, 1].
-    t = time.perf_counter()
-    img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
-    proc.apply(img)
-    timings["ocio_lut3d"] = time.perf_counter() - t
+    if use_lut:
+        # Fused OCIO 3D LUT: PQ EOTF + Reinhard + γ 2.2 OETF in one AVX pass.
+        # f32 is modified in-place; output is SDR gamma-encoded values in [0, 1].
+        t = time.perf_counter()
+        img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
+        proc.apply(img)
+        timings["ocio_lut3d"] = time.perf_counter() - t
+    else:
+        # Parametric path: explicit NumPy steps matching libultrahdr's formulae exactly.
+        # (OCIO's CURVE - ST-2084_to_LINEAR returns 1.0 = 100 nits, which is 100× off,
+        #  so we use _pq_inv_oetf directly to match gainmapmath.cpp pqInvOetf.)
+        t = time.perf_counter()
+        linear = _pq_inv_oetf(f32)
+        timings["pq_decode"] = time.perf_counter() - t
+
+        t = time.perf_counter()
+        headroom = _HDR_PEAK_NITS / _SDR_WHITE_NITS
+        y = linear * headroom
+        y_max = np.max(y, axis=-1, keepdims=True)
+        y_max_sdr = (y_max * (np.float32(1.0) + y_max / (headroom * headroom))
+                     / (np.float32(1.0) + y_max))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
+        f32 = np.clip(y * scale, np.float32(0.0), np.float32(1.0))
+        timings["reinhard"] = time.perf_counter() - t
+
+        t = time.perf_counter()
+        f32 = np.power(f32, np.float32(1.0 / 2.2))
+        timings["srgb_oetf"] = time.perf_counter() - t
 
     # Quantise to uint8 and pack as RGBA8888 (R@byte0, G@byte1, B@byte2, A=255@byte3).
     t = time.perf_counter()

@@ -53,6 +53,8 @@ def _run_one(
     ]
     if opts["force"]:
         cmd.append("--force")
+    if opts["sdr_tonemap"] != "lut":
+        cmd += ["--sdr-tonemap", opts["sdr_tonemap"]]
 
     lines: list[str] = [f"\n── {src.name}  →  {dst.name} ──\n"]
     ok = False
@@ -166,12 +168,13 @@ class App(TkinterDnD.Tk):
         g = ttk.Frame(frm_opts)
         g.pack(padx=8, pady=6, anchor="w")
 
-        self._quality_var   = tk.IntVar(value=95)
-        self._gm_scale_var  = tk.IntVar(value=1)
-        self._gm_gamma_var  = tk.StringVar(value="1.0")
-        self._peak_nits_var = tk.StringVar(value="1000")
-        self._jobs_var      = tk.IntVar(value=2)
-        self._force_var     = tk.BooleanVar(value=False)
+        self._quality_var     = tk.IntVar(value=95)
+        self._gm_scale_var    = tk.IntVar(value=1)
+        self._gm_gamma_var    = tk.StringVar(value="1.0")
+        self._peak_nits_var   = tk.StringVar(value="1000")
+        self._jobs_var        = tk.IntVar(value=2)
+        self._force_var       = tk.BooleanVar(value=False)
+        self._sdr_tonemap_var = tk.StringVar(value="lut")
 
         fields = [
             ("Quality (0–100):",       self._quality_var,   "spin",  0,    100),
@@ -190,8 +193,16 @@ class App(TkinterDnD.Tk):
                 w = ttk.Entry(g, textvariable=var, width=10)
             w.grid(row=row, column=col + 1, sticky="w", padx=(0, 24), pady=2)
 
+        ttk.Label(g, text="SDR tone map:", anchor="e").grid(
+            row=2, column=3, sticky="e", padx=(8, 4)
+        )
+        ttk.Combobox(
+            g, textvariable=self._sdr_tonemap_var,
+            values=["lut", "parametric"], state="readonly", width=11,
+        ).grid(row=2, column=4, sticky="w", padx=(0, 24), pady=2)
+
         ttk.Checkbutton(g, text="Force overwrite  (--force)", variable=self._force_var).grid(
-            row=3, column=0, columnspan=4, sticky="w", padx=(8, 0), pady=(4, 0)
+            row=3, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0)
         )
 
         # ── Convert / Cancel button ──────────────────────────────────────────
@@ -297,6 +308,7 @@ class App(TkinterDnD.Tk):
             "peak_nits":     max(203.0, min(10000, pn)),
             "jobs":          max(1,     min(8,     jb)),
             "force":         self._force_var.get(),
+            "sdr_tonemap":   self._sdr_tonemap_var.get(),
         }
 
     def _start(self) -> None:

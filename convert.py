@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
                    help="Gain map encoding gamma (default: 1.0)")
     p.add_argument("--peak-nits", type=float, default=1000.0,
                    help="Target HDR display peak in nits 203-10000 (default: 1000)")
+    p.add_argument("--sdr-tonemap", choices=["lut", "parametric"], default="lut",
+                   help="SDR tone-map mode: 'lut' (default) uses a fused OCIO 3D LUT "
+                        "(fast, tetrahedral interpolation); 'parametric' uses explicit "
+                        "NumPy steps that exactly reproduce libultrahdr's formulae")
     p.add_argument("--use-api3", action="store_true",
                    help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
                         "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
@@ -291,7 +295,9 @@ def main() -> int:
         t = lap(f"API-3 encode ({len(jpg)/1e3:.0f} KB)", t)
     else:
         # Default API-1 path: Python Reinhard tone map -> raw HDR + raw SDR -> libultrahdr
-        sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(packed_p3_hdr)
+        sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(
+            packed_p3_hdr, use_lut=(args.sdr_tonemap == "lut")
+        )
         for name, secs in tm_timings.items():
             steps.append((f"  tonemap/{name}", secs))
         t = time.perf_counter()
