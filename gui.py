@@ -118,6 +118,7 @@ class App(TkinterDnD.Tk):
         self._success_count: int = 0
         self._failed_files: list[Path] = []
         self._retry_count: int = 0
+        self._current_total: int = 0
         self._path_to_idx: dict[Path, int] = {}
         self._build_ui()
         self._update_convert_btn()
@@ -337,6 +338,7 @@ class App(TkinterDnD.Tk):
         self._success_count = 0
         self._failed_files = []
         self._retry_count = 0
+        self._current_total = n
         self._path_to_idx = {p: i for i, p in enumerate(self._files)}
         for i in range(len(self._files)):
             self._listbox.itemconfig(i, bg="", fg="")
@@ -358,7 +360,6 @@ class App(TkinterDnD.Tk):
         self._convert_btn.config(text="Cancelling…", state="disabled")
 
     def _poll(self) -> None:
-        total = len(self._files)
         try:
             while True:
                 kind, payload = self._queue.get_nowait()
@@ -368,7 +369,7 @@ class App(TkinterDnD.Tk):
                     self._in_flight += 1
                     self._status_var.set(
                         f"  {self._in_flight} in flight  |  "
-                        f"{self._done_count} / {total} done"
+                        f"{self._done_count} / {self._current_total} done"
                     )
                 elif kind == _MSG_FILE_DONE:
                     done, tot, status, src = payload
@@ -450,6 +451,7 @@ class App(TkinterDnD.Tk):
         self._status_var.set(f"Retrying {n} failed file{'s' if n != 1 else ''}…")
         self._in_flight = 0
         self._done_count = 0
+        self._current_total = n
         self._log_append(f"\n── Retry {self._retry_count} — {n} file{'s' if n != 1 else ''} ──\n")
         self._cancel_event.clear()
         self._convert_btn.config(text="Cancel", command=self._cancel, state="normal")
