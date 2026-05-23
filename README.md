@@ -74,6 +74,7 @@ options:
   --gainmap-gamma G
                    Encoding gamma applied to the gain map (default: 1.0)
   --peak-nits N    Target HDR display peak in nits 203-10000 (default: 1000)
+  --use-api3       Use the App-0 + API-3 two-pass pipeline instead of the default API-1
   --force, -f      Overwrite output if it already exists
   --verbose, -v    Extra diagnostic output
 ```
@@ -145,6 +146,8 @@ The libultrahdr script rewrites the embedded JPEG dependency in `libuhdr.dylib` 
 
 ## Pipeline overview
 
+### Default: API-1
+
 ```
 input.tif  (uint16 BT.2020 PQ)
   │
@@ -156,20 +159,41 @@ BT.2020 PQ → Display P3 PQ
   │
   ▼  p3_pq uint16 (H×W×3)
   │
+  ├─► pack RGBA1010102  →  packed_p3_hdr (uint32 H×W)
+  │
+  ├─► Python Reinhard tone map  (color.p3_pq_to_sdr_rgba8888)
+  │     unpack 10-bit / 1023.0 → PQ EOTF → scale by 10 000/203
+  │     → per-pixel max-channel Reinhard → power-law γ 2.2 OETF
+  │     → RGBA8888 uint32 (H×W)
+  │
+  └─► API-1 encode (raw HDR + raw SDR → RGB gain map)
+        uhdr_enc_set_raw_image(packed_p3_hdr, DISPLAY_P3, PQ,   HDR_IMG)
+        uhdr_enc_set_raw_image(sdr_rgba8888,  DISPLAY_P3, SRGB, SDR_IMG)
+        uhdr_enc_set_using_multi_channel_gainmap(1)
+        → output.uhdr.jpg
+```
+
+The gain map is computed from unquantised pixels (no DCT block artefacts in the SDR input). Both renditions are Display P3 → `use_base_cg=true`.
+
+### Alternate: `--use-api3`
+
+```
+  │  (after BT.2020 PQ → Display P3 PQ and pack steps above)
+  │
   ├─► App-0 encode (HDR-only)
   │     uhdr_enc_set_raw_image(p3_pq, HDR_IMG)
   │     → UHDR JPEG → extract_primary_jpeg() → sdr_jpeg (P3 SDR base)
   │
   └─► API-3 encode (raw HDR + compressed SDR → RGB gain map)
-        uhdr_enc_set_raw_image(p3_pq, HDR_IMG)
-        uhdr_enc_set_compressed_image(sdr_jpeg, SDR_IMG)
+        uhdr_enc_set_raw_image(packed_p3_hdr,   DISPLAY_P3, PQ,   HDR_IMG)
+        uhdr_enc_set_compressed_image(sdr_jpeg, DISPLAY_P3, SRGB, SDR_IMG)
         uhdr_enc_set_using_multi_channel_gainmap(1)
         → output.uhdr.jpg
 ```
 
-**Color pipeline** (`color.py`): a single OCIO `GroupTransform` fuses ST.2084 EOTF, two 3×3 gamut matrices (BT.2020→ACEScg and ACEScg→P3 via Bradford CAT), the ACES 1.3 Reference Gamut Compression fixed function, and the ST.2084 inverse EOTF into one AVX-vectorised CPU pass. Far-out-of-gamut hues are soft-compressed (RGC) rather than hard-clipped.
+The App-0 pass lets libultrahdr tone-map the PQ image internally and produce the SDR primary JPEG. That JPEG is reused as the compressed SDR input in the API-3 pass — the primary image is never re-encoded (no double-encode quality loss). The gain map is computed from JPEG-quantised SDR pixels.
 
-**Two-pass encode**: the App-0 pass lets libultrahdr tone-map the PQ image internally and produce the SDR primary JPEG. That JPEG is reused as the compressed SDR input in the API-3 pass, so the primary image is never re-encoded (no double-encode quality loss).
+**Color pipeline** (`color.py`): a single OCIO `GroupTransform` fuses ST.2084 EOTF, two 3×3 gamut matrices (BT.2020→ACEScg and ACEScg→P3 via Bradford CAT), the ACES 1.3 Reference Gamut Compression fixed function, and the ST.2084 inverse EOTF into one AVX-vectorised CPU pass. Far-out-of-gamut hues are soft-compressed (RGC) rather than hard-clipped.
 
 ## Diagnostic tools
 
@@ -207,9 +231,9 @@ scripts\_decode_check.bat
 
 | File | Role |
 |---|---|
-| `convert.py` | CLI entry point, `pack_rgba1010102`, App-0 and API-3 encoder calls, `extract_primary_jpeg` |
+| `convert.py` | CLI entry point, `pack_rgba1010102`, API-1 / App-0 / API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
-| `color.py` | `bt2020_pq_to_p3_pq_uint16`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC |
+| `color.py` | `bt2020_pq_to_p3_pq_uint16`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC; `p3_pq_to_sdr_rgba8888`: Python Reinhard tone map (API-1 SDR input) |
 | `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure
