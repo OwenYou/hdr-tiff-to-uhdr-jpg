@@ -186,7 +186,8 @@ def p3_pq_to_sdr_rgba8888(
     y_max = np.max(y, axis=-1, keepdims=True)             # per-pixel peak channel
     y_max_sdr = (y_max * (np.float32(1.0) + y_max / (headroom * headroom))
                  / (np.float32(1.0) + y_max))
-    scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
     sdr = np.clip(y * scale, np.float32(0.0), np.float32(1.0))
     timings["reinhard"] = time.perf_counter() - t
 
