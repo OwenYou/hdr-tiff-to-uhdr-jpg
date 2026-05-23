@@ -4,10 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-A Python pipeline that converts a single-layer **PQ HDR TIFF** (16-bit RGB, BT.2020) into a **Google Ultra HDR JPEG** using stock `libultrahdr` (google/libultrahdr, no local patches). The pipeline runs two libultrahdr encode passes:
+A Python pipeline that converts a single-layer **PQ HDR TIFF** (16-bit RGB, BT.2020) into a **Google Ultra HDR JPEG** using stock `libultrahdr` (google/libultrahdr, no local patches). The default pipeline is **API-1**:
 
-1. **App-0 pass** — the BT.2020→Display P3 re-gamuted image is fed to the HDR-only encoder (`uhdr_enc_set_raw_image(HDR_IMG)` only); libultrahdr internally tone-maps it and returns a UHDR JPEG whose embedded primary JPEG is the Display P3 SDR base.
-2. **API-3 pass** — the same P3 PQ image is supplied as the raw HDR intent and the primary JPEG extracted from step 1 is supplied as the compressed SDR intent (`uhdr_enc_set_compressed_image(SDR_IMG)`); libultrahdr computes a multi-channel (RGB) gain map and assembles the final UHDR JPEG. Both renditions are Display P3 → `use_base_cg=true`.
+1. **Tone-map pass** — Python Reinhard tone map (`color.p3_pq_to_sdr_rgba8888`) converts the P3 PQ image to raw RGBA8888 SDR pixels.
+2. **API-1 pass** — raw P3 PQ HDR + raw P3 sRGB SDR are both supplied to libultrahdr (`uhdr_enc_set_raw_image` for both); libultrahdr computes a multi-channel (RGB) gain map from unquantised pixels and encodes both layers. Both renditions are Display P3 → `use_base_cg=true`.
+
+With `--use-api3` the pipeline instead runs two passes:
+
+1. **App-0 pass** — the BT.2020→Display P3 re-gamuted image is fed to the HDR-only encoder; libultrahdr internally tone-maps it and returns a UHDR JPEG whose embedded primary JPEG is the Display P3 SDR base.
+2. **API-3 pass** — the same P3 PQ image is supplied as the raw HDR intent and the primary JPEG extracted from step 1 is supplied as the compressed SDR intent (`uhdr_enc_set_compressed_image(SDR_IMG)`); libultrahdr computes a multi-channel (RGB) gain map and assembles the final UHDR JPEG.
 
 The BT.2020→P3 re-gamut applies ACES 1.3 Reference Gamut Compression (OCIO `FIXED_FUNCTION_ACES_GAMUT_COMP_13`) so far-out-of-gamut hues are soft-compressed rather than hard-clipped.
 
@@ -24,6 +29,7 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 #   --gainmap-scale 1    gain map downscale factor 1..128 (default: 1)
 #   --gainmap-gamma 1.0  encoding gamma applied to the gain map (default: 1.0)
 #   --peak-nits 1000     target HDR display peak in nits 203..10000 (default: 1000)
+#   --use-api3           use App-0 + API-3 two-pass pipeline instead of API-1 (default)
 
 # Launch the batch GUI (tkinter; wraps convert.py via subprocess)
 uv run python gui.py
@@ -95,13 +101,21 @@ color.bt2020_pq_to_p3_pq_uint16()
   v
 pack_rgba1010102()  ->  packed_p3_hdr  (uint32 H x W)
   |
-  +---> App-0 encode  (HDR-only, UHDR_CG_DISPLAY_P3 / UHDR_CT_PQ):
+  +---> [DEFAULT] API-1 encode  (raw HDR + raw SDR):
+  |       color.p3_pq_to_sdr_rgba8888(packed_p3_hdr)  ->  sdr_rgba8888 (RGBA8888, sRGB)
+  |       uhdr_enc_set_raw_image(packed_p3_hdr, DISPLAY_P3, PQ, HDR_IMG)
+  |       uhdr_enc_set_raw_image(sdr_rgba8888,  DISPLAY_P3, SRGB, SDR_IMG)
+  |       uhdr_enc_set_using_multi_channel_gainmap(1)
+  |       uhdr_encode()
+  |       ->  output.uhdr.jpg
+  |
+  +---> [--use-api3] App-0 encode  (HDR-only, UHDR_CG_DISPLAY_P3 / UHDR_CT_PQ):
   |       uhdr_enc_set_raw_image(packed_p3_hdr, HDR_IMG)
   |       uhdr_encode()
   |       -> UHDR JPEG bytes
   |       -> extract_primary_jpeg()  ->  sdr_jpeg  (Display P3 SDR base, no re-encode)
   |
-  +---> API-3 encode  (raw HDR + compressed SDR):
+  +---> [--use-api3] API-3 encode  (raw HDR + compressed SDR):
           uhdr_enc_set_raw_image(packed_p3_hdr, DISPLAY_P3, PQ, HDR_IMG)
           uhdr_enc_set_compressed_image(sdr_jpeg, DISPLAY_P3, SRGB, SDR_IMG)
           uhdr_enc_set_using_multi_channel_gainmap(1)

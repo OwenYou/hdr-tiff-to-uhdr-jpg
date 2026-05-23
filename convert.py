@@ -1,20 +1,21 @@
 """Convert a BT.2020 PQ HDR TIFF to a Google Ultra HDR JPEG.
 
-Default pipeline (API-3):
+Default pipeline (API-1):
   1. Convert BT.2020 PQ -> Display P3 PQ (ACES 1.3 gamut compression).
-  2. App-0: feed P3 PQ to libultrahdr HDR-only encoder; extract the
-     tone-mapped primary JPEG (Display P3 SDR base).
-  3. API-3: feed P3 PQ raw HDR + the App-0 primary JPEG as compressed SDR;
-     libultrahdr computes a multi-channel (RGB) gain map and assembles the
-     final UHDR JPEG.  Both renditions are Display P3 -> use_base_cg=true.
-
-With --use-api1 (API-1 path):
-  Steps 2-3 are replaced by a single pass:
   2. Python Reinhard tone map (replicating libultrahdr's internal ReinhardMap)
      converts the P3 PQ image to raw RGBA8888 SDR pixels — no JPEG encode/decode.
   3. API-1: feed raw P3 PQ HDR + raw P3 sRGB SDR; libultrahdr computes the
      gain map from unquantised pixels, then encodes both layers.
   The gain map benefits from a cleaner SDR input (no DCT block artefacts).
+  Both renditions are Display P3 -> use_base_cg=true.
+
+With --use-api3 (API-3 path):
+  Steps 2-3 are replaced by a two-pass pipeline:
+  2. App-0: feed P3 PQ to libultrahdr HDR-only encoder; extract the
+     tone-mapped primary JPEG (Display P3 SDR base).
+  3. API-3: feed P3 PQ raw HDR + the App-0 primary JPEG as compressed SDR;
+     libultrahdr computes a multi-channel (RGB) gain map and assembles the
+     final UHDR JPEG.
 """
 
 import argparse
@@ -51,9 +52,9 @@ def parse_args() -> argparse.Namespace:
                    help="Gain map encoding gamma (default: 1.0)")
     p.add_argument("--peak-nits", type=float, default=1000.0,
                    help="Target HDR display peak in nits 203-10000 (default: 1000)")
-    p.add_argument("--use-api1", action="store_true",
-                   help="API-1 mode: Python Reinhard SDR tone map -> raw HDR+SDR encode "
-                        "(no App-0 JPEG; gain map computed from unquantised pixels)")
+    p.add_argument("--use-api3", action="store_true",
+                   help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
+                        "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
     p.add_argument("--force", "-f", action="store_true",
                    help="Overwrite output if it exists")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -280,22 +281,22 @@ def main() -> int:
     packed_p3_hdr = pack_rgba1010102(p3_pq_16)
     t = lap("pack RGBA1010102", t)
 
-    if args.use_api1:
-        # API-1 path: Python Reinhard tone map -> raw HDR + raw SDR -> libultrahdr
-        sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(packed_p3_hdr)
-        for name, secs in tm_timings.items():
-            steps.append((f"  tonemap/{name}", secs))
-        t = time.perf_counter()
-        jpg = _encode_api1(packed_p3_hdr, sdr_rgba8888, args)
-        t = lap(f"API-1 encode ({len(jpg)/1e3:.0f} KB)", t)
-    else:
-        # Default API-3 path: App-0 tone map -> extract primary JPEG -> API-3
+    if args.use_api3:
+        # API-3 path: App-0 tone map -> extract primary JPEG -> API-3
         app0_bytes = _encode_app0(packed_p3_hdr, args.quality)
         t = lap(f"App-0 encode ({len(app0_bytes)/1e3:.0f} KB)", t)
         sdr_jpeg = extract_primary_jpeg(app0_bytes)
         t = lap(f"extract primary JPEG ({len(sdr_jpeg)/1e3:.0f} KB)", t)
         jpg = _encode_api3(packed_p3_hdr, sdr_jpeg, args)
         t = lap(f"API-3 encode ({len(jpg)/1e3:.0f} KB)", t)
+    else:
+        # Default API-1 path: Python Reinhard tone map -> raw HDR + raw SDR -> libultrahdr
+        sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(packed_p3_hdr)
+        for name, secs in tm_timings.items():
+            steps.append((f"  tonemap/{name}", secs))
+        t = time.perf_counter()
+        jpg = _encode_api1(packed_p3_hdr, sdr_rgba8888, args)
+        t = lap(f"API-1 encode ({len(jpg)/1e3:.0f} KB)", t)
 
     with open(args.output, "wb") as f:
         f.write(jpg)
