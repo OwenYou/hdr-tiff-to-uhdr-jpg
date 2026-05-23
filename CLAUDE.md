@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-A Python pipeline that converts a single-layer **PQ HDR TIFF** (16-bit RGB, BT.2020) into a **Google Ultra HDR JPEG** using stock `libultrahdr` (google/libultrahdr, no local patches). The default pipeline is **API-1**:
+A Python pipeline that converts a single-layer **PQ HDR TIFF** (16-bit RGB, BT.2020) into a **Google Ultra HDR JPEG** using a locally patched `libultrahdr` (vendored in `libultrahdr/`, see `NOTICE.md`). The default pipeline is **API-1**:
 
 1. **Tone-map pass** — Python Reinhard tone map (`color.p3_pq_to_sdr_rgba8888`) converts the P3 PQ image to raw RGBA8888 SDR pixels.
 2. **API-1 pass** — raw P3 PQ HDR + raw P3 sRGB SDR are both supplied to libultrahdr (`uhdr_enc_set_raw_image` for both); libultrahdr computes a multi-channel (RGB) gain map from unquantised pixels and encodes both layers. Both renditions are Display P3 → `use_base_cg=true`.
@@ -39,13 +39,13 @@ uv run python gui.py
 
 Pre-built runtime libraries for both platforms are committed to the repo and sit next to `uhdr_ctypes.py`: `uhdr.dll` + `jpeg62.dll` on Windows, `libuhdr.dylib` + `libjpeg.62.dylib` on macOS. No build step is required to run the pipeline on either platform.
 
-`libultrahdr` is used from **upstream google/libultrahdr with no local patches**. It must be configured with `-DUHDR_WRITE_XMP=ON` so the output carries the legacy `hdrgm:` XMP for older viewer compatibility. All build scripts already set this flag.
+`libultrahdr/` is vendored in this repo with a local patch (see `NOTICE.md`). It must be configured with `-DUHDR_WRITE_XMP=ON` so the output carries the legacy `hdrgm:` XMP for older viewer compatibility. All build scripts already set this flag.
 
-Rebuild only when updating or patching the native source. Source trees (`libultrahdr/`, `libjpeg-turbo/`) are cloned separately and not tracked in this repo.
+Rebuild only when updating or patching the native source. `libultrahdr/` is tracked in this repo. `libjpeg-turbo/` is cloned separately and not tracked.
 
 #### Windows (rebuild)
 
-**Both batch files call `vcvars64.bat` from `Visual Studio\18\Community` and use NASM at `C:\Program Files\NASM`; install paths are hard-coded to `C:\msvcinstalls`.**
+**Both batch files call `vcvars64.bat` from `Visual Studio\18\Community` and use NASM at `C:\Program Files\NASM`; install paths are hard-coded to `C:\msvcinstalls`. CMake ships with Visual Studio at `C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.**
 
 ```cmd
 scripts\_build_jpegturbo.bat        :: builds libjpeg-turbo, installs to C:\msvcinstalls
@@ -63,7 +63,7 @@ bash scripts/_build_jpegturbo_macos.sh     # builds libjpeg-turbo, installs to ~
 bash scripts/_build_libultrahdr_macos.sh   # builds libultrahdr, fixes rpath, copies to project dir
 ```
 
-The libultrahdr script runs `install_name_tool` to rewrite the embedded JPEG dependency to `@loader_path/libjpeg.62.dylib`, so both dylibs resolve each other by relative path without `DYLD_LIBRARY_PATH`. Source trees are cloned (if absent) from the parent of the project directory.
+The libultrahdr script runs `install_name_tool` to rewrite the embedded JPEG dependency to `@loader_path/libjpeg.62.dylib`, so both dylibs resolve each other by relative path without `DYLD_LIBRARY_PATH`. `libultrahdr/` is already in the project directory; the macOS script builds from it directly. `libjpeg-turbo/` must be cloned separately (the jpegturbo build script handles this).
 
 ### Diagnostics / inspection helpers
 

@@ -12,15 +12,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROOT="$(cd "$PROJECT_DIR/.." && pwd)"
+ROOT="$PROJECT_DIR"   # libultrahdr is vendored inside the project directory
 INSTALL="$HOME/uhdr-deps"
 
 echo "=== ROOT=$ROOT  INSTALL=$INSTALL ==="
-
-if [ ! -d "$ROOT/libultrahdr" ]; then
-  echo "=== cloning libultrahdr ==="
-  git -C "$ROOT" clone --depth 1 https://github.com/google/libultrahdr.git
-fi
 
 cd "$ROOT/libultrahdr"
 rm -rf build

@@ -4,7 +4,6 @@ __pycache__/
 *.py[cod]
 
 # Native dependencies (cloned separately, built locally)
-libultrahdr/
 libjpeg-turbo/
 
 # Built artifacts — keep only the pre-built runtime libraries needed to run the pipeline
