@@ -153,7 +153,7 @@ def p3_pq_to_sdr_rgba8888(
       → PQ EOTF [0,1 signal → 0,1 linear, 1.0 = 10 000 nits]
       → scale by headroom (10 000 / 203 ≈ 49.26)
       → per-pixel max-channel Reinhard: y*(1 + y/h²)/(1 + y)
-      → sRGB OETF
+      → power-law γ 2.2 OETF
       → floor(val*255 + 0.5) → uint8, pack as RGBA8888 uint32
 
     Returns (rgba_u32, timings) where rgba_u32 is (H,W) uint32 C-contiguous.
@@ -191,13 +191,9 @@ def p3_pq_to_sdr_rgba8888(
     sdr = np.clip(y * scale, np.float32(0.0), np.float32(1.0))
     timings["reinhard"] = time.perf_counter() - t
 
-    # sRGB OETF: linear [0,1] → gamma-encoded [0,1].
+    # Pure power-law γ 2.2 OETF: linear [0,1] → gamma-encoded [0,1].
     t = time.perf_counter()
-    sdr_gamma = np.where(
-        sdr <= np.float32(0.0031308),
-        np.float32(12.92) * sdr,
-        np.float32(1.055) * np.power(sdr, np.float32(1.0 / 2.4)) - np.float32(0.055),
-    )
+    sdr_gamma = np.power(np.clip(sdr, np.float32(0.0), np.float32(1.0)), np.float32(1.0 / 2.2))
     timings["srgb_oetf"] = time.perf_counter() - t
 
     # Quantise to uint8 and pack as RGBA8888 (R@byte0, G@byte1, B@byte2, A=255@byte3).
