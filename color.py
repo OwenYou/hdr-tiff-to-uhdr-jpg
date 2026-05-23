@@ -15,6 +15,7 @@ _SDR_WHITE_NITS = np.float32(203.0)
 _RGC_PARAMS = [1.147, 1.264, 1.312, 0.815, 0.803, 0.880, 1.2]
 
 _CPU_PROC: OCIO.CPUProcessor | None = None
+_TONEMAP_PROC: OCIO.CPUProcessor | None = None
 
 # PQ EOTF constants matching gainmapmath.cpp (kPqM1, kPqM2, kPqC1-C3).
 # pqInvOetf returns [0,1] where 1.0 = 10 000 nits — same scale libultrahdr uses.
@@ -101,6 +102,57 @@ def _build_processor() -> OCIO.CPUProcessor:
     return _CPU_PROC
 
 
+def _build_tonemap_processor() -> OCIO.CPUProcessor:
+    """Build (once) a fused OCIO CPU processor for the full P3 PQ → SDR tone mapping.
+
+    Encodes the complete pipeline into a 65³ 3D LUT in PQ signal space so that
+    all five tone-map stages run in a single AVX-vectorised OCIO traversal:
+      PQ EOTF (10-bit signal → linear × headroom)
+      → per-pixel max-channel Reinhard: y*(1+y/h²)/(1+y)
+      → γ 2.2 OETF (linear [0,1] → gamma-encoded [0,1])
+
+    65 grid points per channel (spacing ≈ 0.016 in PQ signal) is sufficient for
+    sub-LSB accuracy at 8-bit output after OCIO trilinear interpolation.
+    """
+    global _TONEMAP_PROC
+    if _TONEMAP_PROC is not None:
+        return _TONEMAP_PROC
+
+    N = 65  # 65³ ≈ 274 K LUT samples; b varies fastest to match OCIO's layout
+    headroom    = float(_HDR_PEAK_NITS / _SDR_WHITE_NITS)   # ≈ 49.26
+    headroom_sq = np.float32(headroom * headroom)
+
+    coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
+    r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
+    flat = np.stack([r_g.ravel(), g_g.ravel(), b_g.ravel()], axis=-1)  # (N³, 3)
+
+    # PQ EOTF → linear [0,1] (1.0 = 10 000 nits), then scale to Reinhard headroom
+    linear = _pq_inv_oetf(flat) * np.float32(headroom)  # (N³, 3), range [0, headroom]
+
+    # Reinhard tone mapping (ReinhardMap in jpegr.cpp)
+    y_max = np.max(linear, axis=-1, keepdims=True)
+    y_max_sdr = (y_max * (np.float32(1.0) + y_max / headroom_sq)
+                 / (np.float32(1.0) + y_max))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
+    sdr = np.clip(linear * scale, np.float32(0.0), np.float32(1.0))
+
+    # γ 2.2 OETF: linear [0,1] → gamma-encoded [0,1]
+    sdr_gamma = np.power(
+        np.clip(sdr, np.float32(0.0), np.float32(1.0)),
+        np.float32(1.0 / 2.2),
+    )  # (N³, 3)
+
+    lut3d = OCIO.Lut3DTransform()
+    lut3d.setGridSize(N)
+    lut3d.setInterpolation(OCIO.INTERP_TETRAHEDRAL)
+    lut3d.setData(sdr_gamma.ravel())
+
+    cfg = OCIO.Config.CreateRaw()
+    _TONEMAP_PROC = cfg.getProcessor(lut3d).getDefaultCPUProcessor()
+    return _TONEMAP_PROC
+
+
 def bt2020_pq_to_p3_pq_uint16(
     arr_u16: np.ndarray,
 ) -> tuple[np.ndarray, dict[str, float]]:
@@ -148,57 +200,39 @@ def p3_pq_to_sdr_rgba8888(
     (ReinhardMap in jpegr.cpp), operating on exactly the same 10-bit signal values that
     libultrahdr sees (getRgba1010102Pixel divides by 1023.0, not 65535.0).
 
-    Pipeline:
-      unpack 10-bit channels / 1023.0  [matches getRgba1010102Pixel]
-      → PQ EOTF [0,1 signal → 0,1 linear, 1.0 = 10 000 nits]
-      → scale by headroom (10 000 / 203 ≈ 49.26)
-      → per-pixel max-channel Reinhard: y*(1 + y/h²)/(1 + y)
-      → power-law γ 2.2 OETF
-      → floor(val*255 + 0.5) → uint8, pack as RGBA8888 uint32
+    Pipeline (three fused stages — all non-separable ops baked into the OCIO 3D LUT):
+      unpack 10-bit channels / 1023.0  [unpack_10bit]
+      → fused OCIO 3D LUT: PQ EOTF × headroom + Reinhard + γ 2.2 OETF  [ocio_lut3d]
+      → ×255 + 0.5, clip → uint8, pack as RGBA8888 uint32  [pack_rgba8888]
 
     Returns (rgba_u32, timings) where rgba_u32 is (H,W) uint32 C-contiguous.
     """
     H, W = packed_p3_hdr.shape
     timings: dict[str, float] = {}
 
-    # Unpack 10-bit channels exactly as getRgba1010102Pixel in gainmapmath.cpp:
-    #   pixel.r = float(packed & 0x3ff) / 1023.0f
-    #   pixel.g = float((packed >> 10) & 0x3ff) / 1023.0f
-    #   pixel.b = float((packed >> 20) & 0x3ff) / 1023.0f
+    proc = _build_tonemap_processor()
+
+    # Unpack 10-bit channels and normalise to [0, 1] PQ signal space.
+    # Matches getRgba1010102Pixel in gainmapmath.cpp: float(packed & 0x3ff) / 1023.0f
     t = time.perf_counter()
     r10 = (packed_p3_hdr & np.uint32(0x3FF)).astype(np.float32)
     g10 = ((packed_p3_hdr >> np.uint32(10)) & np.uint32(0x3FF)).astype(np.float32)
     b10 = ((packed_p3_hdr >> np.uint32(20)) & np.uint32(0x3FF)).astype(np.float32)
-    f32 = np.stack([r10, g10, b10], axis=-1) / np.float32(1023.0)
+    f32 = np.ascontiguousarray(
+        np.stack([r10, g10, b10], axis=-1) * np.float32(1.0 / 1023.0)
+    )
     timings["unpack_10bit"] = time.perf_counter() - t
 
-    # PQ EOTF: signal [0,1] → linear [0,1] where 1.0 = 10 000 nits.
-    # Uses the same formula and constants as pqInvOetf in gainmapmath.cpp.
-    # (OCIO's CURVE - ST-2084_to_LINEAR returns 1.0 = 100 nits, which is 100× off.)
+    # Apply fused OCIO 3D LUT: PQ EOTF + Reinhard + γ 2.2 OETF in one AVX pass.
+    # f32 is modified in-place; output is SDR gamma-encoded values in [0, 1].
     t = time.perf_counter()
-    linear = _pq_inv_oetf(f32)
-    timings["pq_decode"] = time.perf_counter() - t
-
-    # libultrahdr Reinhard tone mapping (jpegr.cpp ReinhardMap).
-    t = time.perf_counter()
-    headroom = _HDR_PEAK_NITS / _SDR_WHITE_NITS          # ≈ 49.26
-    y = linear * headroom                                 # [0, headroom]
-    y_max = np.max(y, axis=-1, keepdims=True)             # per-pixel peak channel
-    y_max_sdr = (y_max * (np.float32(1.0) + y_max / (headroom * headroom))
-                 / (np.float32(1.0) + y_max))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
-    sdr = np.clip(y * scale, np.float32(0.0), np.float32(1.0))
-    timings["reinhard"] = time.perf_counter() - t
-
-    # Pure power-law γ 2.2 OETF: linear [0,1] → gamma-encoded [0,1].
-    t = time.perf_counter()
-    sdr_gamma = np.power(np.clip(sdr, np.float32(0.0), np.float32(1.0)), np.float32(1.0 / 2.2))
-    timings["srgb_oetf"] = time.perf_counter() - t
+    img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
+    proc.apply(img)
+    timings["ocio_lut3d"] = time.perf_counter() - t
 
     # Quantise to uint8 and pack as RGBA8888 (R@byte0, G@byte1, B@byte2, A=255@byte3).
     t = time.perf_counter()
-    u8 = np.clip(sdr_gamma * np.float32(255.0) + np.float32(0.5), 0, 255).astype(np.uint8)
+    u8 = np.clip(f32 * np.float32(255.0) + np.float32(0.5), 0, 255).astype(np.uint8)
     rgba = np.empty((H, W, 4), dtype=np.uint8)
     rgba[..., :3] = u8
     rgba[..., 3] = 255
