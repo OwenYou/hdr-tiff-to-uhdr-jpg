@@ -14,7 +14,8 @@ _SDR_WHITE_NITS = np.float32(203.0)
 # ACES 1.3 Reference Gamut Compression parameters (AMPAS spec defaults).
 _RGC_PARAMS = [1.147, 1.264, 1.312, 0.815, 0.803, 0.880, 1.2]
 
-_CPU_PROC: OCIO.CPUProcessor | None = None
+_CPU_PROC: OCIO.CPUProcessor | None = None            # LUT-based gamut processor
+_CPU_PROC_ANALYTICAL: OCIO.CPUProcessor | None = None  # analytical gamut processor
 _TONEMAP_PROC: OCIO.CPUProcessor | None = None
 
 # PQ EOTF constants matching gainmapmath.cpp (kPqM1, kPqM2, kPqC1-C3).
@@ -41,19 +42,16 @@ def _mat3_to_ocio44(m33: np.ndarray) -> list:
     return list(m.flatten())
 
 
-def _build_processor() -> OCIO.CPUProcessor:
-    """Build (once) a fused OCIO CPU processor for the full BT.2020 PQ -> P3 PQ pipeline.
+def _build_analytical_processor() -> OCIO.CPUProcessor:
+    """Build (once) the analytical BT.2020 PQ -> P3 PQ OCIO pipeline.
 
-    Transform chain (all in one AVX-vectorised pass):
-      ST.2084 EOTF  ->  BT.2020->ACEScg matrix  ->  ACES 1.3 RGC
-      ->  ACEScg->P3 matrix  ->  clip [0,inf)  ->  ST.2084 inverse EOTF  ->  clip [0,1]
-
-    OCIO normalises linear light so that 1.0 == 10 000 nits, which is scale-invariant
-    through the linear matrix and RGC operations.
+    Used directly when use_lut=False, and to bake the 3D LUT in _build_processor().
+    Transform chain: ST.2084 EOTF -> BT.2020->ACEScg -> ACES 1.3 RGC
+      -> ACEScg->P3 -> clip [0,∞) -> ST.2084 OETF -> clip [0,1]
     """
-    global _CPU_PROC
-    if _CPU_PROC is not None:
-        return _CPU_PROC
+    global _CPU_PROC_ANALYTICAL
+    if _CPU_PROC_ANALYTICAL is not None:
+        return _CPU_PROC_ANALYTICAL
 
     bt2020 = colour.RGB_COLOURSPACES["ITU-R BT.2020"]
     acescg = colour.RGB_COLOURSPACES["ACEScg"]
@@ -65,32 +63,22 @@ def _build_processor() -> OCIO.CPUProcessor:
     cfg   = OCIO.Config.CreateRaw()
     group = OCIO.GroupTransform()
 
-    # 1. ST.2084 EOTF: PQ signal [0,1] -> linear [0,1]  (1.0 = 10 000 nits)
     group.appendTransform(OCIO.BuiltinTransform(style="CURVE - ST-2084_to_LINEAR"))
-
-    # 2. BT.2020 -> ACEScg  (Bradford chromatic adaptation)
     group.appendTransform(OCIO.MatrixTransform(matrix=_mat3_to_ocio44(M_bt2020_acescg)))
-
-    # 3. ACES 1.3 Reference Gamut Compression
     group.appendTransform(
         OCIO.FixedFunctionTransform(
             OCIO.FIXED_FUNCTION_ACES_GAMUT_COMP_13, _RGC_PARAMS
         )
     )
-
-    # 4. ACEScg -> Display P3  (Bradford chromatic adaptation)
     group.appendTransform(OCIO.MatrixTransform(matrix=_mat3_to_ocio44(M_acescg_p3)))
 
-    # 5. Clip residual out-of-gamut hues to [0, inf)
     clip_low = OCIO.RangeTransform()
     clip_low.setMinInValue(0.0)
     clip_low.setMinOutValue(0.0)
     group.appendTransform(clip_low)
 
-    # 6. ST.2084 inverse EOTF: linear [0,1] -> PQ signal [0,1]
     group.appendTransform(OCIO.BuiltinTransform(style="CURVE - LINEAR_to_ST-2084"))
 
-    # 7. Clamp final PQ to [0, 1]  (guards against float rounding at peak)
     clip_full = OCIO.RangeTransform()
     clip_full.setMinInValue(0.0)
     clip_full.setMinOutValue(0.0)
@@ -98,7 +86,41 @@ def _build_processor() -> OCIO.CPUProcessor:
     clip_full.setMaxOutValue(1.0)
     group.appendTransform(clip_full)
 
-    _CPU_PROC = cfg.getProcessor(group).getDefaultCPUProcessor()
+    _CPU_PROC_ANALYTICAL = cfg.getProcessor(group).getDefaultCPUProcessor()
+    return _CPU_PROC_ANALYTICAL
+
+
+def _build_processor() -> OCIO.CPUProcessor:
+    """Build (once) a 3D LUT CPU processor for BT.2020 PQ -> P3 PQ.
+
+    Bakes the full analytical pipeline (EOTF + RGC + matrix + OETF) into a 97³
+    3D LUT with tetrahedral interpolation.  Per-pixel cost drops from per-pixel
+    ACES RGC arithmetic to a single table lookup; 97 grid points give sub-LSB
+    accuracy at 10-bit output.
+    """
+    global _CPU_PROC
+    if _CPU_PROC is not None:
+        return _CPU_PROC
+
+    analytical = _build_analytical_processor()
+
+    N = 97  # 97³ ≈ 912 K samples; b varies fastest to match OCIO's LUT layout
+    coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
+    r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
+    flat = np.ascontiguousarray(
+        np.stack([r_g.ravel(), g_g.ravel(), b_g.ravel()], axis=-1)
+    )  # (N³, 3) — b varies fastest
+
+    img = OCIO.PackedImageDesc(flat, N * N * N, 1, OCIO.CHANNEL_ORDERING_RGB)
+    analytical.apply(img)  # bake: flat is overwritten with P3 PQ output values
+
+    lut3d = OCIO.Lut3DTransform()
+    lut3d.setGridSize(N)
+    lut3d.setInterpolation(OCIO.INTERP_TETRAHEDRAL)
+    lut3d.setData(flat.ravel())
+
+    cfg = OCIO.Config.CreateRaw()
+    _CPU_PROC = cfg.getProcessor(lut3d).getDefaultCPUProcessor()
     return _CPU_PROC
 
 
@@ -153,15 +175,20 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
     return _TONEMAP_PROC
 
 
-def bt2020_pq_to_p3_pq_uint16(
+def bt2020_pq_to_p3_pq(
     arr_u16: np.ndarray,
+    use_lut: bool = True,
 ) -> tuple[np.ndarray, dict[str, float]]:
-    """BT.2020 PQ uint16 (H,W,3) -> (Display P3 PQ uint16 (H,W,3), timings).
+    """BT.2020 PQ uint16 (H,W,3) -> Display P3 PQ float32 (H,W,3) in [0,1].
 
-    Single-pass OCIO pipeline — all ops fused into one AVX-vectorised traversal:
-      ST.2084 EOTF -> BT.2020->ACEScg -> ACES 1.3 RGC -> ACEScg->P3 -> ST.2084 OEOTF
+    use_lut=True  (default): 97³ 3D LUT with tetrahedral interpolation — the full
+      analytical pipeline is baked once per process, then each pixel is a table lookup.
+    use_lut=False (parametric): per-pixel analytical OCIO pipeline — EOTF + BT.2020→ACEScg
+      matrix + ACES 1.3 RGC FixedFunction + ACEScg→P3 matrix + OETF, no LUT approximation.
 
-    Returns (result, timings) where timings is a dict of per-substep seconds.
+    Returns (result_f32, timings).  result_f32 is a C-contiguous float32 array with PQ
+    signal values in [0, 1].  Pass it directly to pack_rgba1010102() and
+    p3_pq_to_sdr_rgba8888(); no uint16 intermediate is required.
     """
     if arr_u16.dtype != np.uint16:
         raise TypeError(f"expected uint16, got {arr_u16.dtype}")
@@ -175,55 +202,46 @@ def bt2020_pq_to_p3_pq_uint16(
     t_to_f32 = time.perf_counter() - t
 
     t = time.perf_counter()
+    proc = _build_processor() if use_lut else _build_analytical_processor()
     img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
-    _build_processor().apply(img)
+    proc.apply(img)
     t_ocio = time.perf_counter() - t
 
-    t = time.perf_counter()
-    result = (f32 * np.float32(65535.0) + np.float32(0.5)).astype(np.uint16)
-    t_to_u16 = time.perf_counter() - t
-
-    timings = {
-        "u16->f32":   t_to_f32,
-        "ocio_apply": t_ocio,
-        "f32->u16":   t_to_u16,
-    }
-    return result, timings
+    return f32, {"u16->f32": t_to_f32, "ocio_apply": t_ocio}
 
 
 def p3_pq_to_sdr_rgba8888(
-    packed_p3_hdr: np.ndarray,
+    p3_pq_f32: np.ndarray,
     use_lut: bool = True,
 ) -> tuple[np.ndarray, dict[str, float]]:
-    """RGBA1010102 uint32 (H,W) → RGBA8888 uint32 (H,W) using libultrahdr's tone map.
+    """Display P3 PQ float32 (H,W,3) in [0,1] → RGBA8888 uint32 (H,W).
 
     Replicates the Reinhard tone mapper that libultrahdr applies internally during App-0
-    (ReinhardMap in jpegr.cpp), operating on exactly the same 10-bit signal values that
-    libultrahdr sees (getRgba1010102Pixel divides by 1023.0, not 65535.0).
+    (ReinhardMap in jpegr.cpp), operating on the same PQ signal values.
 
     use_lut=True  (default): fused OCIO 3D LUT with tetrahedral interpolation —
-      unpack + PQ EOTF × headroom + Reinhard + γ 2.2 OETF in one AVX pass.
+      PQ EOTF × headroom + Reinhard + γ 2.2 OETF in one AVX pass.
     use_lut=False (parametric): explicit NumPy steps that exactly reproduce the
       libultrahdr formulae; slower but no LUT approximation.
 
+    NOTE: when use_lut=True, OCIO modifies p3_pq_f32 in-place.  The caller must
+    not use p3_pq_f32 after this call (pack_rgba1010102 should be called first).
+
     Returns (rgba_u32, timings) where rgba_u32 is (H,W) uint32 C-contiguous.
     """
-    H, W = packed_p3_hdr.shape
+    if p3_pq_f32.ndim != 3 or p3_pq_f32.shape[2] != 3:
+        raise ValueError(f"expected (H, W, 3), got {p3_pq_f32.shape}")
+
+    H, W = p3_pq_f32.shape[:2]
     timings: dict[str, float] = {}
 
     if use_lut:
         proc = _build_tonemap_processor()  # pre-warm cache before timing starts
 
-    # Unpack 10-bit channels and normalise to [0, 1] PQ signal space.
-    # Matches getRgba1010102Pixel in gainmapmath.cpp: float(packed & 0x3ff) / 1023.0f
-    t = time.perf_counter()
-    r10 = (packed_p3_hdr & np.uint32(0x3FF)).astype(np.float32)
-    g10 = ((packed_p3_hdr >> np.uint32(10)) & np.uint32(0x3FF)).astype(np.float32)
-    b10 = ((packed_p3_hdr >> np.uint32(20)) & np.uint32(0x3FF)).astype(np.float32)
-    f32 = np.ascontiguousarray(
-        np.stack([r10, g10, b10], axis=-1) * np.float32(1.0 / 1023.0)
-    )
-    timings["unpack_10bit"] = time.perf_counter() - t
+    # Ensure C-contiguous layout required by OCIO PackedImageDesc.
+    # np.ascontiguousarray returns the array itself when already C-contiguous,
+    # so OCIO's in-place apply will overwrite p3_pq_f32 (caller is notified above).
+    f32 = np.ascontiguousarray(p3_pq_f32)
 
     if use_lut:
         # Fused OCIO 3D LUT: PQ EOTF + Reinhard + γ 2.2 OETF in one AVX pass.
@@ -234,8 +252,6 @@ def p3_pq_to_sdr_rgba8888(
         timings["ocio_lut3d"] = time.perf_counter() - t
     else:
         # Parametric path: explicit NumPy steps matching libultrahdr's formulae exactly.
-        # (OCIO's CURVE - ST-2084_to_LINEAR returns 1.0 = 100 nits, which is 100× off,
-        #  so we use _pq_inv_oetf directly to match gainmapmath.cpp pqInvOetf.)
         t = time.perf_counter()
         linear = _pq_inv_oetf(f32)
         timings["pq_decode"] = time.perf_counter() - t
@@ -256,12 +272,17 @@ def p3_pq_to_sdr_rgba8888(
         timings["srgb_oetf"] = time.perf_counter() - t
 
     # Quantise to uint8 and pack as RGBA8888 (R@byte0, G@byte1, B@byte2, A=255@byte3).
+    # Scale f32 in-place (out=) to avoid 3 × 414 MB float temporaries from the
+    # expression chain f32*255 + 0.5 + clip.
     t = time.perf_counter()
-    u8 = np.clip(f32 * np.float32(255.0) + np.float32(0.5), 0, 255).astype(np.uint8)
+    np.multiply(f32, np.float32(255.0), out=f32)
+    np.add(f32, np.float32(0.5), out=f32)
+    np.clip(f32, np.float32(0.0), np.float32(255.0), out=f32)
+    u8 = f32.astype(np.uint8)
     rgba = np.empty((H, W, 4), dtype=np.uint8)
     rgba[..., :3] = u8
     rgba[..., 3] = 255
-    rgba_u32 = np.ascontiguousarray(rgba).view(np.uint32).reshape(H, W)
+    rgba_u32 = rgba.view(np.uint32).reshape(H, W)
     timings["pack_rgba8888"] = time.perf_counter() - t
 
     return rgba_u32, timings

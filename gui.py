@@ -53,8 +53,8 @@ def _run_one(
     ]
     if opts["force"]:
         cmd.append("--force")
-    if opts["sdr_tonemap"] != "lut":
-        cmd += ["--sdr-tonemap", opts["sdr_tonemap"]]
+    if opts["pipeline"] != "LUT":
+        cmd += ["--pipeline", opts["pipeline"]]
 
     lines: list[str] = [f"\n── {src.name}  →  {dst.name} ──\n"]
     ok = False
@@ -174,7 +174,7 @@ class App(TkinterDnD.Tk):
         self._peak_nits_var   = tk.StringVar(value="1000")
         self._jobs_var        = tk.IntVar(value=2)
         self._force_var       = tk.BooleanVar(value=False)
-        self._sdr_tonemap_var = tk.StringVar(value="lut")
+        self._pipeline_var = tk.StringVar(value="LUT")
 
         fields = [
             ("Quality (0–100):",       self._quality_var,   "spin",  0,    100),
@@ -193,12 +193,12 @@ class App(TkinterDnD.Tk):
                 w = ttk.Entry(g, textvariable=var, width=10)
             w.grid(row=row, column=col + 1, sticky="w", padx=(0, 24), pady=2)
 
-        ttk.Label(g, text="SDR tone map:", anchor="e").grid(
+        ttk.Label(g, text="Pipeline:", anchor="e").grid(
             row=2, column=3, sticky="e", padx=(8, 4)
         )
         ttk.Combobox(
-            g, textvariable=self._sdr_tonemap_var,
-            values=["lut", "parametric"], state="readonly", width=11,
+            g, textvariable=self._pipeline_var,
+            values=["LUT", "Parametric"], state="readonly", width=11,
         ).grid(row=2, column=4, sticky="w", padx=(0, 24), pady=2)
 
         ttk.Checkbutton(g, text="Force overwrite  (--force)", variable=self._force_var).grid(
@@ -308,7 +308,7 @@ class App(TkinterDnD.Tk):
             "peak_nits":     max(203.0, min(10000, pn)),
             "jobs":          max(1,     min(8,     jb)),
             "force":         self._force_var.get(),
-            "sdr_tonemap":   self._sdr_tonemap_var.get(),
+            "pipeline":      self._pipeline_var.get().lower(),
         }
 
     def _start(self) -> None:

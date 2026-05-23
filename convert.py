@@ -52,10 +52,13 @@ def parse_args() -> argparse.Namespace:
                    help="Gain map encoding gamma (default: 1.0)")
     p.add_argument("--peak-nits", type=float, default=1000.0,
                    help="Target HDR display peak in nits 203-10000 (default: 1000)")
-    p.add_argument("--sdr-tonemap", choices=["lut", "parametric"], default="lut",
-                   help="SDR tone-map mode: 'lut' (default) uses a fused OCIO 3D LUT "
-                        "(fast, tetrahedral interpolation); 'parametric' uses explicit "
-                        "NumPy steps that exactly reproduce libultrahdr's formulae")
+    p.add_argument("--pipeline", choices=["lut", "parametric"], default="lut",
+                   help="Color pipeline mode applied to both the gamut-compression and "
+                        "SDR tone-map steps.  'lut' (default): both steps use a baked "
+                        "OCIO 3D LUT with tetrahedral interpolation (fast).  "
+                        "'parametric': gamut uses the per-pixel analytical OCIO pipeline; "
+                        "tone map uses explicit NumPy Reinhard steps (slow, no LUT "
+                        "approximation)")
     p.add_argument("--use-api3", action="store_true",
                    help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
                         "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
@@ -80,17 +83,24 @@ def load_pq_tiff(path: str) -> np.ndarray:
     return arr
 
 
-def pack_rgba1010102(rgb16: np.ndarray) -> np.ndarray:
-    """uint16 (H,W,3) -> RGBA1010102 uint32 (H,W).
+def pack_rgba1010102(rgb_f32: np.ndarray) -> np.ndarray:
+    """float32 (H,W,3) in [0,1] -> RGBA1010102 uint32 (H,W).
 
     Bit layout per ultrahdr_api.h: R[9:0] G[19:10] B[29:20] A[31:30].
+
+    Quantizes all 3 channels in one contiguous (H,W,3) pass to avoid 3 separate
+    strided reads.  G and B are then shifted in-place (no allocation) before the
+    final OR into the output buffer.
     """
-    u32 = rgb16.astype(np.uint32)
-    r10 = (u32[..., 0] * np.uint32(1023) + np.uint32(32767)) // np.uint32(65535)
-    g10 = (u32[..., 1] * np.uint32(1023) + np.uint32(32767)) // np.uint32(65535)
-    b10 = (u32[..., 2] * np.uint32(1023) + np.uint32(32767)) // np.uint32(65535)
-    packed = r10 | (g10 << np.uint32(10)) | (b10 << np.uint32(20)) | (np.uint32(3) << np.uint32(30))
-    return np.ascontiguousarray(packed)
+    H, W = rgb_f32.shape[:2]
+    u32 = (rgb_f32 * np.float32(1023.0) + np.float32(0.5)).astype(np.uint32)  # (H,W,3)
+    u32[..., 1] <<= np.uint32(10)   # in-place: no allocation
+    u32[..., 2] <<= np.uint32(20)   # in-place: no allocation
+    packed = np.empty((H, W), dtype=np.uint32)
+    np.bitwise_or(u32[..., 0], u32[..., 1], out=packed)
+    np.bitwise_or(packed, u32[..., 2], out=packed)
+    packed |= np.uint32(0xC0000000)
+    return packed
 
 
 def _raw_image(fmt: int, cg: int, ct: int, packed: np.ndarray) -> UhdrRawImage:
@@ -275,14 +285,16 @@ def main() -> int:
     H, W = rgb16.shape[:2]
     t = lap(f"load TIFF ({W}x{H})", t)
 
+    use_lut = (args.pipeline == "lut")
+
     # Step 1: BT.2020 PQ -> Display P3 PQ (ACES 1.3 gamut compression)
-    p3_pq_16, color_timings = color.bt2020_pq_to_p3_pq_uint16(rgb16)
+    p3_pq_f32, color_timings = color.bt2020_pq_to_p3_pq(rgb16, use_lut=use_lut)
     for name, secs in color_timings.items():
         steps.append((f"  color/{name}", secs))
     t = time.perf_counter()
 
     # Pack HDR (needed by both paths)
-    packed_p3_hdr = pack_rgba1010102(p3_pq_16)
+    packed_p3_hdr = pack_rgba1010102(p3_pq_f32)
     t = lap("pack RGBA1010102", t)
 
     if args.use_api3:
@@ -295,8 +307,9 @@ def main() -> int:
         t = lap(f"API-3 encode ({len(jpg)/1e3:.0f} KB)", t)
     else:
         # Default API-1 path: Python Reinhard tone map -> raw HDR + raw SDR -> libultrahdr
+        # pack_rgba1010102 is already done; pass f32 directly (OCIO will modify it in-place)
         sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(
-            packed_p3_hdr, use_lut=(args.sdr_tonemap == "lut")
+            p3_pq_f32, use_lut=use_lut
         )
         for name, secs in tm_timings.items():
             steps.append((f"  tonemap/{name}", secs))
