@@ -1,6 +1,6 @@
 # BT.2020 PQ → Google Ultra HDR JPEG
 
-Converts a single-layer **PQ HDR TIFF** (16-bit RGB, BT.2020 primaries) into a **Google Ultra HDR JPEG** (ISO 21496-1 gain map + legacy `hdrgm:` XMP) using stock [google/libultrahdr](https://github.com/google/libultrahdr) — no local patches.
+Converts a single-layer **PQ HDR TIFF** (16-bit RGB, BT.2020 primaries) into a **Google Ultra HDR JPEG** (ISO 21496-1 gain map + legacy `hdrgm:` XMP) using a locally patched `libultrahdr` (vendored in `libultrahdr/`, see `NOTICE.md`).
 
 The output carries a multi-channel (RGB) gain map with both renditions in Display P3 (`use_base_cg=true`), making it compatible with iOS Photos, macOS Preview, and Adobe Lightroom.
 
@@ -34,7 +34,7 @@ Only needed if you want to update or patch the native source. Pre-built librarie
 | [NASM](https://www.nasm.us/) | `C:\Program Files\NASM` |
 | CMake + Ninja | on `PATH` (installed with VS or separately) |
 | libjpeg-turbo source tree | `libjpeg-turbo/` subdirectory (cloned separately, not tracked) |
-| libultrahdr source tree | `libultrahdr/` subdirectory (cloned separately, not tracked) |
+| libultrahdr source tree | `libultrahdr/` (vendored and tracked in this repo) |
 
 #### macOS prerequisites
 
@@ -44,7 +44,7 @@ Only needed if you want to update or patch the native source. Pre-built librarie
 | CMake | `brew install cmake` |
 | Ninja (optional, speeds up build) | `brew install ninja` |
 | libjpeg-turbo source tree | cloned automatically by the build script |
-| libultrahdr source tree | cloned automatically by the build script |
+| libultrahdr source tree | `libultrahdr/` (vendored and tracked in this repo) |
 
 ## Quick start
 
@@ -74,6 +74,10 @@ options:
   --gainmap-gamma G
                    Encoding gamma applied to the gain map (default: 1.0)
   --peak-nits N    Target HDR display peak in nits 203-10000 (default: 1000)
+  --pipeline {lut,parametric}
+                   Color pipeline mode for both gamut compression and SDR tone map.
+                   'lut' (default): baked OCIO 3D LUT, tetrahedral interpolation (fast).
+                   'parametric': per-pixel analytical OCIO + NumPy Reinhard (slow).
   --use-api3       Use the App-0 + API-3 two-pass pipeline instead of the default API-1
   --force, -f      Overwrite output if it already exists
   --verbose, -v    Extra diagnostic output
@@ -132,7 +136,7 @@ After building, copy `libultrahdr\build\uhdr.dll` and `C:\msvcinstalls\bin\jpeg6
 
 ### macOS
 
-Both source trees are cloned automatically from the parent of the project directory if they are not already present. Intermediate libraries install to `~/uhdr-deps`.
+`libultrahdr/` is already in the project directory (vendored). `libjpeg-turbo/` is cloned automatically by the jpegturbo build script. Intermediate libraries install to `~/uhdr-deps`.
 
 ```bash
 # 1. Build libjpeg-turbo (installs to ~/uhdr-deps)
@@ -152,18 +156,18 @@ The libultrahdr script rewrites the embedded JPEG dependency in `libuhdr.dylib` 
 input.tif  (uint16 BT.2020 PQ)
   │
   ▼
-BT.2020 PQ → Display P3 PQ
+BT.2020 PQ → Display P3 PQ  (color.bt2020_pq_to_p3_pq)
   ST.2084 EOTF → BT.2020→ACEScg (Bradford) → ACES 1.3 RGC
   → ACEScg→Display P3 (Bradford) → clip → ST.2084 OEOTF
-  (single fused OCIO CPU pass, AVX-vectorised)
+  (baked into a 97³ OCIO 3D LUT; one AVX-vectorised tetrahedral pass)
   │
-  ▼  p3_pq uint16 (H×W×3)
+  ▼  p3_pq_f32 float32 (H×W×3)
   │
   ├─► pack RGBA1010102  →  packed_p3_hdr (uint32 H×W)
   │
-  ├─► Python Reinhard tone map  (color.p3_pq_to_sdr_rgba8888)
-  │     unpack 10-bit / 1023.0 → PQ EOTF → scale by 10 000/203
-  │     → per-pixel max-channel Reinhard → power-law γ 2.2 OETF
+  ├─► SDR tone map  (color.p3_pq_to_sdr_rgba8888, from p3_pq_f32)
+  │     lut mode:   65³ baked OCIO LUT (PQ → Reinhard → γ 2.2) in one AVX pass
+  │     parametric: unpack → PQ EOTF → Reinhard → γ 2.2 OETF (explicit NumPy)
   │     → RGBA8888 uint32 (H×W)
   │
   └─► API-1 encode (raw HDR + raw SDR → RGB gain map)
@@ -193,7 +197,7 @@ The gain map is computed from unquantised pixels (no DCT block artefacts in the 
 
 The App-0 pass lets libultrahdr tone-map the PQ image internally and produce the SDR primary JPEG. That JPEG is reused as the compressed SDR input in the API-3 pass — the primary image is never re-encoded (no double-encode quality loss). The gain map is computed from JPEG-quantised SDR pixels.
 
-**Color pipeline** (`color.py`): a single OCIO `GroupTransform` fuses ST.2084 EOTF, two 3×3 gamut matrices (BT.2020→ACEScg and ACEScg→P3 via Bradford CAT), the ACES 1.3 Reference Gamut Compression fixed function, and the ST.2084 inverse EOTF into one AVX-vectorised CPU pass. Far-out-of-gamut hues are soft-compressed (RGC) rather than hard-clipped.
+**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the full analytical pipeline (ST.2084 EOTF, BT.2020→ACEScg→P3 gamut matrices via Bradford CAT, ACES 1.3 RGC, ST.2084 inverse EOTF) into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). `p3_pq_to_sdr_rgba8888` similarly bakes PQ EOTF → Reinhard → γ 2.2 OETF into a 65³ LUT. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`. Far-out-of-gamut hues are soft-compressed (RGC) rather than hard-clipped.
 
 ## Diagnostic tools
 
@@ -215,6 +219,9 @@ uv run python tools/_dump_icc.py     <file.uhdr.jpg>
 # Side-by-side ICC profile comparison between two JPEGs
 uv run python tools/_compare_icc.py  <a.uhdr.jpg> <b.uhdr.jpg>
 
+# Rewrite JPEG ICC rTRC/gTRC/bTRC to pure γ 2.2 parametric curve (ICC v4 para type 0)
+uv run python tools/_rewrite_icc_gamma.py <file.uhdr.jpg> [output.jpg]
+
 # Downscale a BT.2020 PQ TIFF in linear light (for resolution-limit testing)
 uv run python tools/_downscale_tiff.py <in.tif> <out.tif> <WxH>
 ```
@@ -233,7 +240,7 @@ scripts\_decode_check.bat
 |---|---|
 | `convert.py` | CLI entry point, `pack_rgba1010102`, API-1 / App-0 / API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
-| `color.py` | `bt2020_pq_to_p3_pq_uint16`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC; `p3_pq_to_sdr_rgba8888`: Python Reinhard tone map (API-1 SDR input) |
+| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC, returns float32 (baked 97³ LUT or analytical); `p3_pq_to_sdr_rgba8888`: Reinhard tone map (baked 65³ LUT or analytical NumPy); `--pipeline {lut,parametric}` selects both |
 | `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure
