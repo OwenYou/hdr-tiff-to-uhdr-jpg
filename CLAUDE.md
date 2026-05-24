@@ -14,7 +14,7 @@ With `--use-api3` the pipeline instead runs two passes:
 1. **App-0 pass** — the BT.2020→Display P3 re-gamuted image is fed to the HDR-only encoder; libultrahdr internally tone-maps it and returns a UHDR JPEG whose embedded primary JPEG is the Display P3 SDR base.
 2. **API-3 pass** — the same P3 PQ image is supplied as the raw HDR intent and the primary JPEG extracted from step 1 is supplied as the compressed SDR intent (`uhdr_enc_set_compressed_image(SDR_IMG)`); libultrahdr computes a multi-channel (RGB) gain map and assembles the final UHDR JPEG.
 
-The BT.2020→P3 re-gamut applies ACES 1.3 Reference Gamut Compression (OCIO `FIXED_FUNCTION_ACES_GAMUT_COMP_13`) so far-out-of-gamut hues are soft-compressed rather than hard-clipped.
+By default (`--gamut compress`) the BT.2020→P3 re-gamut applies ACES 1.3 Reference Gamut Compression (OCIO `FIXED_FUNCTION_ACES_GAMUT_COMP_13`) so far-out-of-gamut hues are soft-compressed. With `--gamut clip` a direct BT.2020→P3 matrix is applied and negative values are hard-clipped.
 
 ## Commands
 
@@ -31,6 +31,8 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 #   --peak-nits 1000     target HDR display peak in nits 203..10000 (default: 1000)
 #   --pipeline lut       color pipeline mode: lut (default, baked OCIO 3D LUT, fast)
 #                        or parametric (per-pixel analytical OCIO + NumPy Reinhard, slow)
+#   --gamut compress     BT.2020→P3 out-of-gamut handling: compress (default, ACES 1.3 RGC)
+#                        or clip (direct hard clip after gamut matrix)
 #   --use-api3           use App-0 + API-3 two-pass pipeline instead of API-1 (default)
 
 # Launch the batch GUI (tkinter; wraps convert.py via subprocess)
@@ -95,9 +97,11 @@ input.tif  (uint16 BT.2020 PQ, full range)
   |
   v
 color.bt2020_pq_to_p3_pq()
-  (ST.2084 EOTF -> BT.2020 -> ACEScg (Bradford CAT)
-   -> ACES 1.3 RGC -> ACEScg -> Display P3 (Bradford CAT)
-   -> clip residuals -> ST.2084 inverse EOTF)
+  compress (default): ST.2084 EOTF -> BT.2020 -> ACEScg (Bradford CAT)
+    -> ACES 1.3 RGC -> ACEScg -> Display P3 (Bradford CAT)
+    -> clip [0,∞) -> ST.2084 inverse EOTF
+  clip: ST.2084 EOTF -> BT.2020 -> Display P3 (Bradford CAT)
+    -> clip [0,∞) -> ST.2084 inverse EOTF
   baked into a 97³ OCIO 3D LUT (lut mode) or run analytically (parametric mode)
   |
   v  p3_pq_f32  (float32 Display P3 PQ, no uint16 intermediate)
@@ -136,7 +140,7 @@ primary and gain-map JPEGs in the UHDR container. JPEG scan data byte-stuffs `0x
 
 - **`convert.py`** — argparse + I/O, `pack_rgba1010102` / `_compressed_image` helpers, App-0 and API-3 encoder calls, `extract_primary_jpeg`.
 - **`gui.py`** — tkinter batch GUI. Spawns `convert.py` as a subprocess per file, runs up to 8 jobs in parallel via `ThreadPoolExecutor`, and streams per-file log output back to the main thread via a `queue.Queue`. Screenshot at `docs/GUI.png`.
-- **`color.py`** — `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC gamut compression; returns float32 directly (no uint16 roundtrip). In `lut` mode the full analytical pipeline is baked into a 97³ OCIO 3D LUT at startup (tetrahedral interpolation). `p3_pq_to_sdr_rgba8888`: Reinhard tone map from float32 P3 PQ to RGBA8888; in `lut` mode uses a baked 65³ LUT. Both paths controlled by `--pipeline {lut,parametric}`; LUT processors are lazily built and cached in module-level globals.
+- **`color.py`** — `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ; returns float32 directly (no uint16 roundtrip). Gamut handling is selected by `--gamut {compress,clip}`: `compress` routes via ACEScg + ACES 1.3 RGC; `clip` uses a direct BT.2020→P3 matrix and hard-clips negative linear values. In `lut` mode the chosen pipeline is baked into a 97³ OCIO 3D LUT (tetrahedral interpolation); two separate LUTs are lazily built and cached. `p3_pq_to_sdr_rgba8888`: Reinhard tone map from float32 P3 PQ to RGBA8888; in `lut` mode uses a baked 65³ LUT. Both paths controlled by `--pipeline {lut,parametric}`.
 - **`uhdr_ctypes.py`** — `ctypes` binding for `uhdr.dll`. Loads the DLL via `os.add_dll_directory`, defines `UhdrRawImage` / `UhdrCompressedImage` / `UhdrErrorInfo` matching `ultrahdr_api.h`, asserts `sizeof(UhdrRawImage) == 64` to catch ABI drift, and exposes both the raw-image (`uhdr_enc_set_raw_image`) and compressed-image (`uhdr_enc_set_compressed_image`) encoder paths.
 
 ### Color-pipeline invariants worth knowing

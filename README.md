@@ -78,6 +78,10 @@ options:
                    Color pipeline mode for both gamut compression and SDR tone map.
                    'lut' (default): baked OCIO 3D LUT, tetrahedral interpolation (fast).
                    'parametric': per-pixel analytical OCIO + NumPy Reinhard (slow).
+  --gamut {compress,clip}
+                   BT.2020 → Display P3 out-of-gamut handling.
+                   'compress' (default): ACES 1.3 Reference Gamut Compression (soft).
+                   'clip': direct hard clip of negative P3 values after the gamut matrix.
   --use-api3       Use the App-0 + API-3 two-pass pipeline instead of the default API-1
   --force, -f      Overwrite output if it already exists
   --verbose, -v    Extra diagnostic output
@@ -110,6 +114,8 @@ Leave the field blank to write each output file next to its source TIFF (e.g. `f
 | Gainmap gamma | > 0 | 1.0 | Encoding gamma applied to the gain map |
 | Peak nits | 203–10000 | 1000 | Target HDR display peak brightness |
 | Parallel jobs | 1–8 | 2 | Number of files encoded simultaneously |
+| Pipeline | LUT / Parametric | LUT | Color pipeline mode (see `--pipeline`) |
+| Gamut | Compress / Clip | Compress (ACES RGC) | BT.2020→P3 out-of-gamut handling (see `--gamut`) |
 | Force overwrite | on/off | off | Overwrite existing output files (equivalent to `--force`) |
 
 ### Converting
@@ -157,8 +163,9 @@ input.tif  (uint16 BT.2020 PQ)
   │
   ▼
 BT.2020 PQ → Display P3 PQ  (color.bt2020_pq_to_p3_pq)
-  ST.2084 EOTF → BT.2020→ACEScg (Bradford) → ACES 1.3 RGC
-  → ACEScg→Display P3 (Bradford) → clip → ST.2084 OEOTF
+  compress (default): ST.2084 EOTF → BT.2020→ACEScg (Bradford) → ACES 1.3 RGC
+    → ACEScg→Display P3 (Bradford) → clip [0,∞) → ST.2084 OETF
+  clip: ST.2084 EOTF → BT.2020→Display P3 (Bradford) → clip [0,∞) → ST.2084 OETF
   (baked into a 97³ OCIO 3D LUT; one AVX-vectorised tetrahedral pass)
   │
   ▼  p3_pq_f32 float32 (H×W×3)
@@ -197,7 +204,7 @@ The gain map is computed from unquantised pixels (no DCT block artefacts in the 
 
 The App-0 pass lets libultrahdr tone-map the PQ image internally and produce the SDR primary JPEG. That JPEG is reused as the compressed SDR input in the API-3 pass — the primary image is never re-encoded (no double-encode quality loss). The gain map is computed from JPEG-quantised SDR pixels.
 
-**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the full analytical pipeline (ST.2084 EOTF, BT.2020→ACEScg→P3 gamut matrices via Bradford CAT, ACES 1.3 RGC, ST.2084 inverse EOTF) into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). `p3_pq_to_sdr_rgba8888` similarly bakes PQ EOTF → Reinhard → γ 2.2 OETF into a 65³ LUT. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`. Far-out-of-gamut hues are soft-compressed (RGC) rather than hard-clipped.
+**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the BT.2020→P3 pipeline into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). With `--gamut compress` (default) the chain goes via ACEScg with ACES 1.3 Reference Gamut Compression; with `--gamut clip` it uses a direct BT.2020→P3 matrix and hard-clips negative values. `p3_pq_to_sdr_rgba8888` bakes PQ EOTF → Reinhard → γ 2.2 OETF into a 65³ LUT. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`.
 
 ## Diagnostic tools
 
@@ -240,7 +247,7 @@ scripts\_decode_check.bat
 |---|---|
 | `convert.py` | CLI entry point, `pack_rgba1010102`, API-1 / App-0 / API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
-| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ with ACES 1.3 RGC, returns float32 (baked 97³ LUT or analytical); `p3_pq_to_sdr_rgba8888`: Reinhard tone map (baked 65³ LUT or analytical NumPy); `--pipeline {lut,parametric}` selects both |
+| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888`: Reinhard tone map (baked 65³ LUT or analytical NumPy); `--pipeline {lut,parametric}` selects both |
 | `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure

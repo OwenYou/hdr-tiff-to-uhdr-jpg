@@ -59,6 +59,10 @@ def parse_args() -> argparse.Namespace:
                         "'parametric': gamut uses the per-pixel analytical OCIO pipeline; "
                         "tone map uses explicit NumPy Reinhard steps (slow, no LUT "
                         "approximation)")
+    p.add_argument("--gamut", choices=["compress", "clip"], default="compress",
+                   help="Gamut handling for BT.2020 → Display P3. "
+                        "'compress' (default): ACES 1.3 Reference Gamut Compression. "
+                        "'clip': direct hard clip of out-of-gamut values.")
     p.add_argument("--use-api3", action="store_true",
                    help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
                         "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
@@ -286,9 +290,12 @@ def main() -> int:
     t = lap(f"load TIFF ({W}x{H})", t)
 
     use_lut = (args.pipeline == "lut")
+    gamut_compress = (args.gamut == "compress")
 
-    # Step 1: BT.2020 PQ -> Display P3 PQ (ACES 1.3 gamut compression)
-    p3_pq_f32, color_timings = color.bt2020_pq_to_p3_pq(rgb16, use_lut=use_lut)
+    # Step 1: BT.2020 PQ -> Display P3 PQ
+    p3_pq_f32, color_timings = color.bt2020_pq_to_p3_pq(
+        rgb16, use_lut=use_lut, gamut_compress=gamut_compress
+    )
     for name, secs in color_timings.items():
         steps.append((f"  color/{name}", secs))
     t = time.perf_counter()

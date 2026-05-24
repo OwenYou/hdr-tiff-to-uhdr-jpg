@@ -55,6 +55,8 @@ def _run_one(
         cmd.append("--force")
     if opts["pipeline"] != "LUT":
         cmd += ["--pipeline", opts["pipeline"]]
+    if opts.get("gamut") == "clip":
+        cmd += ["--gamut", "clip"]
 
     lines: list[str] = [f"\n── {src.name}  →  {dst.name} ──\n"]
     ok = False
@@ -175,7 +177,8 @@ class App(TkinterDnD.Tk):
         self._peak_nits_var   = tk.StringVar(value="1000")
         self._jobs_var        = tk.IntVar(value=2)
         self._force_var       = tk.BooleanVar(value=False)
-        self._pipeline_var = tk.StringVar(value="LUT")
+        self._pipeline_var    = tk.StringVar(value="LUT")
+        self._gamut_var       = tk.StringVar(value="Compress (ACES RGC)")
 
         fields = [
             ("Quality (0–100):",       self._quality_var,   "spin",  0,    100),
@@ -202,8 +205,16 @@ class App(TkinterDnD.Tk):
             values=["LUT", "Parametric"], state="readonly", width=11,
         ).grid(row=2, column=4, sticky="w", padx=(0, 24), pady=2)
 
+        ttk.Label(g, text="Gamut:", anchor="e").grid(
+            row=3, column=0, sticky="e", padx=(8, 4)
+        )
+        ttk.Combobox(
+            g, textvariable=self._gamut_var,
+            values=["Compress (ACES RGC)", "Clip"], state="readonly", width=18,
+        ).grid(row=3, column=1, sticky="w", padx=(0, 24), pady=2)
+
         ttk.Checkbutton(g, text="Force overwrite  (--force)", variable=self._force_var).grid(
-            row=3, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0)
+            row=4, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0)
         )
 
         # ── Convert / Cancel button ──────────────────────────────────────────
@@ -310,6 +321,7 @@ class App(TkinterDnD.Tk):
             "jobs":          max(1,     min(8,     jb)),
             "force":         self._force_var.get(),
             "pipeline":      self._pipeline_var.get().lower(),
+            "gamut":         "clip" if self._gamut_var.get() == "Clip" else "compress",
         }
 
     def _start(self) -> None:

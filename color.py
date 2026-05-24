@@ -14,8 +14,10 @@ _SDR_WHITE_NITS = np.float32(203.0)
 # ACES 1.3 Reference Gamut Compression parameters (AMPAS spec defaults).
 _RGC_PARAMS = [1.147, 1.264, 1.312, 0.815, 0.803, 0.880, 1.2]
 
-_CPU_PROC: OCIO.CPUProcessor | None = None            # LUT-based gamut processor
-_CPU_PROC_ANALYTICAL: OCIO.CPUProcessor | None = None  # analytical gamut processor
+_CPU_PROC: OCIO.CPUProcessor | None = None                   # LUT-based gamut-compress processor
+_CPU_PROC_ANALYTICAL: OCIO.CPUProcessor | None = None         # analytical gamut-compress processor
+_CPU_PROC_CLIP: OCIO.CPUProcessor | None = None               # LUT-based gamut-clip processor
+_CPU_PROC_ANALYTICAL_CLIP: OCIO.CPUProcessor | None = None    # analytical gamut-clip processor
 _TONEMAP_PROC: OCIO.CPUProcessor | None = None
 
 # PQ EOTF constants matching gainmapmath.cpp (kPqM1, kPqM2, kPqC1-C3).
@@ -124,6 +126,79 @@ def _build_processor() -> OCIO.CPUProcessor:
     return _CPU_PROC
 
 
+def _build_analytical_processor_clip() -> OCIO.CPUProcessor:
+    """Build (once) the analytical BT.2020 PQ -> P3 PQ pipeline with direct clip.
+
+    Same chain as _build_analytical_processor() but skips ACES 1.3 RGC: out-of-gamut
+    colors are hard-clipped to [0, ∞) in linear light after the BT.2020→P3 matrix.
+    Transform chain: ST.2084 EOTF -> BT.2020->P3 (Bradford CAT)
+      -> clip [0,∞) -> ST.2084 OETF -> clip [0,1]
+    """
+    global _CPU_PROC_ANALYTICAL_CLIP
+    if _CPU_PROC_ANALYTICAL_CLIP is not None:
+        return _CPU_PROC_ANALYTICAL_CLIP
+
+    bt2020 = colour.RGB_COLOURSPACES["ITU-R BT.2020"]
+    p3d65  = colour.RGB_COLOURSPACES["Display P3"]
+
+    M_bt2020_p3 = colour.matrix_RGB_to_RGB(bt2020, p3d65, "Bradford")
+
+    cfg   = OCIO.Config.CreateRaw()
+    group = OCIO.GroupTransform()
+
+    group.appendTransform(OCIO.BuiltinTransform(style="CURVE - ST-2084_to_LINEAR"))
+    group.appendTransform(OCIO.MatrixTransform(matrix=_mat3_to_ocio44(M_bt2020_p3)))
+
+    clip_low = OCIO.RangeTransform()
+    clip_low.setMinInValue(0.0)
+    clip_low.setMinOutValue(0.0)
+    group.appendTransform(clip_low)
+
+    group.appendTransform(OCIO.BuiltinTransform(style="CURVE - LINEAR_to_ST-2084"))
+
+    clip_full = OCIO.RangeTransform()
+    clip_full.setMinInValue(0.0)
+    clip_full.setMinOutValue(0.0)
+    clip_full.setMaxInValue(1.0)
+    clip_full.setMaxOutValue(1.0)
+    group.appendTransform(clip_full)
+
+    _CPU_PROC_ANALYTICAL_CLIP = cfg.getProcessor(group).getDefaultCPUProcessor()
+    return _CPU_PROC_ANALYTICAL_CLIP
+
+
+def _build_processor_clip() -> OCIO.CPUProcessor:
+    """Build (once) a 3D LUT CPU processor for BT.2020 PQ -> P3 PQ with direct clip.
+
+    Bakes _build_analytical_processor_clip() into a 97³ 3D LUT with tetrahedral
+    interpolation.  Same grid size as the gamut-compress LUT.
+    """
+    global _CPU_PROC_CLIP
+    if _CPU_PROC_CLIP is not None:
+        return _CPU_PROC_CLIP
+
+    analytical = _build_analytical_processor_clip()
+
+    N = 97
+    coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
+    r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
+    flat = np.ascontiguousarray(
+        np.stack([r_g.ravel(), g_g.ravel(), b_g.ravel()], axis=-1)
+    )
+
+    img = OCIO.PackedImageDesc(flat, N * N * N, 1, OCIO.CHANNEL_ORDERING_RGB)
+    analytical.apply(img)
+
+    lut3d = OCIO.Lut3DTransform()
+    lut3d.setGridSize(N)
+    lut3d.setInterpolation(OCIO.INTERP_TETRAHEDRAL)
+    lut3d.setData(flat.ravel())
+
+    cfg = OCIO.Config.CreateRaw()
+    _CPU_PROC_CLIP = cfg.getProcessor(lut3d).getDefaultCPUProcessor()
+    return _CPU_PROC_CLIP
+
+
 def _build_tonemap_processor() -> OCIO.CPUProcessor:
     """Build (once) a fused OCIO CPU processor for the full P3 PQ → SDR tone mapping.
 
@@ -178,13 +253,14 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
 def bt2020_pq_to_p3_pq(
     arr_u16: np.ndarray,
     use_lut: bool = True,
+    gamut_compress: bool = True,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """BT.2020 PQ uint16 (H,W,3) -> Display P3 PQ float32 (H,W,3) in [0,1].
 
-    use_lut=True  (default): 97³ 3D LUT with tetrahedral interpolation — the full
-      analytical pipeline is baked once per process, then each pixel is a table lookup.
-    use_lut=False (parametric): per-pixel analytical OCIO pipeline — EOTF + BT.2020→ACEScg
-      matrix + ACES 1.3 RGC FixedFunction + ACEScg→P3 matrix + OETF, no LUT approximation.
+    use_lut=True  (default): 97³ 3D LUT with tetrahedral interpolation.
+    use_lut=False (parametric): per-pixel analytical OCIO pipeline, no LUT approximation.
+    gamut_compress=True  (default): ACES 1.3 Reference Gamut Compression via ACEScg.
+    gamut_compress=False: direct hard clip of out-of-gamut values after BT.2020→P3 matrix.
 
     Returns (result_f32, timings).  result_f32 is a C-contiguous float32 array with PQ
     signal values in [0, 1].  Pass it directly to pack_rgba1010102() and
@@ -202,7 +278,10 @@ def bt2020_pq_to_p3_pq(
     t_to_f32 = time.perf_counter() - t
 
     t = time.perf_counter()
-    proc = _build_processor() if use_lut else _build_analytical_processor()
+    if gamut_compress:
+        proc = _build_processor() if use_lut else _build_analytical_processor()
+    else:
+        proc = _build_processor_clip() if use_lut else _build_analytical_processor_clip()
     img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
     proc.apply(img)
     t_ocio = time.perf_counter() - t
