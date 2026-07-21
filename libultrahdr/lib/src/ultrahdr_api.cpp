@@ -615,6 +615,33 @@ uhdr_enc_set_using_multi_channel_gainmap(uhdr_codec_private_t* enc, int use_mult
   return status;
 }
 
+UHDR_EXTERN uhdr_error_info_t
+uhdr_enc_set_force_rgb_gainmap_metadata(uhdr_codec_private_t* enc, int force_rgb) {
+  uhdr_error_info_t status = g_no_error;
+
+  if (dynamic_cast<uhdr_encoder_private*>(enc) == nullptr) {
+    status.error_code = UHDR_CODEC_INVALID_PARAM;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail, "received nullptr for uhdr codec instance");
+    return status;
+  }
+
+  uhdr_encoder_private* handle = dynamic_cast<uhdr_encoder_private*>(enc);
+
+  if (handle->m_sailed) {
+    status.error_code = UHDR_CODEC_INVALID_OPERATION;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail,
+             "An encode operation has already been performed on this context and the context is in "
+             "end state. The context is no longer configurable. To reuse, call reset()");
+    return status;
+  }
+
+  handle->m_force_rgb_gainmap_metadata = force_rgb;
+
+  return status;
+}
+
 UHDR_EXTERN uhdr_error_info_t uhdr_enc_set_gainmap_scale_factor(uhdr_codec_private_t* enc,
                                                                 int gainmap_scale_factor) {
   uhdr_error_info_t status = g_no_error;
@@ -1246,6 +1273,7 @@ uhdr_error_info_t uhdr_encode(uhdr_codec_private_t* enc) {
                           handle->m_use_multi_channel_gainmap, handle->m_gamma,
                           handle->m_enc_preset, handle->m_min_content_boost,
                           handle->m_max_content_boost, handle->m_target_disp_max_brightness);
+    jpegr.setForceRgbGainmapMetadata(handle->m_force_rgb_gainmap_metadata);
     if (handle->m_compressed_images.find(UHDR_BASE_IMG) != handle->m_compressed_images.end() &&
         handle->m_compressed_images.find(UHDR_GAIN_MAP_IMG) != handle->m_compressed_images.end()) {
       auto& base_entry = handle->m_compressed_images.find(UHDR_BASE_IMG)->second;
@@ -1345,6 +1373,7 @@ void uhdr_reset_encoder(uhdr_codec_private_t* enc) {
     handle->m_output_format = UHDR_CODEC_JPG;
     handle->m_gainmap_scale_factor = ultrahdr::kMapDimensionScaleFactorDefault;
     handle->m_use_multi_channel_gainmap = ultrahdr::kUseMultiChannelGainMapDefault;
+    handle->m_force_rgb_gainmap_metadata = false;
     handle->m_gamma = ultrahdr::kGainMapGammaDefault;
     handle->m_enc_preset = ultrahdr::kEncSpeedPresetDefault;
     handle->m_min_content_boost = FLT_MIN;

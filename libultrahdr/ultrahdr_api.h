@@ -402,6 +402,23 @@ UHDR_EXTERN uhdr_error_info_t uhdr_enc_set_exif_data(uhdr_codec_private_t* enc,
 UHDR_EXTERN uhdr_error_info_t
 uhdr_enc_set_using_multi_channel_gainmap(uhdr_codec_private_t* enc, int use_multi_channel_gainmap);
 
+/*!\brief Force ISO 21496-1 gain map metadata to always encode 3 channels even when all channel
+ * values are identical. Normally the library collapses to a 1-channel metadata block when the
+ * computed per-channel values are equal; this option overrides that optimisation so the metadata
+ * always carries separate R, G, B entries. Has no effect on the gain map pixel format (use
+ * uhdr_enc_set_using_multi_channel_gainmap for that).
+ * Default is 0 (disabled).
+ * NOTE: Applicable only in encoding scenario.
+ *
+ * \param[in]  enc  encoder instance.
+ * \param[in]  force_rgb  1 to force 3-channel metadata, 0 to use default behaviour.
+ *
+ * \return uhdr_error_info_t #UHDR_CODEC_OK if operation succeeds,
+ *                           #UHDR_CODEC_INVALID_PARAM otherwise.
+ */
+UHDR_EXTERN uhdr_error_info_t
+uhdr_enc_set_force_rgb_gainmap_metadata(uhdr_codec_private_t* enc, int force_rgb);
+
 /*!\brief Set gain map scaling factor. The encoding process allows signalling a downscaled gainmap
  * image instead of full resolution. This setting controls the factor by which the renditions are
  * downscaled. For instance, gainmap_scale_factor = 2 implies gainmap_image_width =

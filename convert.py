@@ -66,6 +66,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use-api3", action="store_true",
                    help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
                         "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
+    p.add_argument("--force-rgb-gainmap", action="store_true", default=False,
+                   help="Force ISO 21496-1 gain map metadata to encode 3 separate R/G/B channel "
+                        "entries even when all channels are identical (prevents the library from "
+                        "collapsing to a 1-channel luma metadata block). Does not affect gain map "
+                        "pixel format. Default: off.")
     p.add_argument("--force", "-f", action="store_true",
                    help="Overwrite output if it exists")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -207,6 +212,8 @@ def _encode_api3(packed_p3_hdr: np.ndarray,
               "api3 set_compressed_image(SDR)")
         check(uhdr.uhdr_enc_set_using_multi_channel_gainmap(enc, 1),
               "api3 set_multi_channel_gainmap")
+        check(uhdr.uhdr_enc_set_force_rgb_gainmap_metadata(enc, int(args.force_rgb_gainmap)),
+              "api3 set_force_rgb_gainmap_metadata")
         check(uhdr.uhdr_enc_set_gainmap_scale_factor(enc, args.gainmap_scale),
               "api3 set_gainmap_scale_factor")
         check(uhdr.uhdr_enc_set_gainmap_gamma(enc, args.gainmap_gamma),
@@ -250,6 +257,8 @@ def _encode_api1(packed_p3_hdr: np.ndarray,
               "api1 set_raw_image(SDR)")
         check(uhdr.uhdr_enc_set_using_multi_channel_gainmap(enc, 1),
               "api1 set_multi_channel_gainmap")
+        check(uhdr.uhdr_enc_set_force_rgb_gainmap_metadata(enc, int(args.force_rgb_gainmap)),
+              "api1 set_force_rgb_gainmap_metadata")
         check(uhdr.uhdr_enc_set_gainmap_scale_factor(enc, args.gainmap_scale),
               "api1 set_gainmap_scale_factor")
         check(uhdr.uhdr_enc_set_gainmap_gamma(enc, args.gainmap_gamma),

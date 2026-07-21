@@ -377,6 +377,7 @@ struct uhdr_encoder_private : uhdr_codec_private {
   uhdr_codec_t m_output_format;
   int m_gainmap_scale_factor;
   bool m_use_multi_channel_gainmap;
+  bool m_force_rgb_gainmap_metadata;
   float m_gamma;
   uhdr_enc_preset_t m_enc_preset;
   float m_min_content_boost;

@@ -57,6 +57,8 @@ def _run_one(
         cmd += ["--pipeline", opts["pipeline"]]
     if opts.get("gamut") == "clip":
         cmd += ["--gamut", "clip"]
+    if opts.get("force_rgb_gainmap"):
+        cmd.append("--force-rgb-gainmap")
 
     lines: list[str] = [f"\n── {src.name}  →  {dst.name} ──\n"]
     ok = False
@@ -179,6 +181,7 @@ class App(TkinterDnD.Tk):
         self._force_var       = tk.BooleanVar(value=False)
         self._pipeline_var    = tk.StringVar(value="LUT")
         self._gamut_var       = tk.StringVar(value="Compress (ACES RGC)")
+        self._force_rgb_gainmap_var = tk.BooleanVar(value=False)
 
         fields = [
             ("Quality (0–100):",       self._quality_var,   "spin",  0,    100),
@@ -216,6 +219,11 @@ class App(TkinterDnD.Tk):
         ttk.Checkbutton(g, text="Force overwrite  (--force)", variable=self._force_var).grid(
             row=4, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0)
         )
+
+        ttk.Checkbutton(
+            g, text="Force RGB gain map metadata  (--force-rgb-gainmap)",
+            variable=self._force_rgb_gainmap_var,
+        ).grid(row=5, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(2, 0))
 
         # ── Convert / Cancel button ──────────────────────────────────────────
         self._convert_btn = ttk.Button(self, text="Convert", command=self._start, width=28)
@@ -322,6 +330,7 @@ class App(TkinterDnD.Tk):
             "force":         self._force_var.get(),
             "pipeline":      self._pipeline_var.get().lower(),
             "gamut":         "clip" if self._gamut_var.get() == "Clip" else "compress",
+            "force_rgb_gainmap": self._force_rgb_gainmap_var.get(),
         }
 
     def _start(self) -> None:

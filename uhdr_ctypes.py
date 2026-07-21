@@ -130,6 +130,9 @@ uhdr.uhdr_enc_set_quality.restype = UhdrErrorInfo
 uhdr.uhdr_enc_set_using_multi_channel_gainmap.argtypes = [_codec_p, c_int]
 uhdr.uhdr_enc_set_using_multi_channel_gainmap.restype = UhdrErrorInfo
 
+uhdr.uhdr_enc_set_force_rgb_gainmap_metadata.argtypes = [_codec_p, c_int]
+uhdr.uhdr_enc_set_force_rgb_gainmap_metadata.restype = UhdrErrorInfo
+
 uhdr.uhdr_enc_set_gainmap_scale_factor.argtypes = [_codec_p, c_int]
 uhdr.uhdr_enc_set_gainmap_scale_factor.restype = UhdrErrorInfo
 

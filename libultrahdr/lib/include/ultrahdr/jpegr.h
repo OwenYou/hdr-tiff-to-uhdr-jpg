@@ -317,6 +317,14 @@ class JpegR {
    */
   bool isUsingMultiChannelGainMap() { return this->mUseMultiChannelGainMap; }
 
+  /*!\brief force ISO 21496-1 metadata to always encode 3 channels even when all channels are
+   * identical. Has no effect on the gain map pixel format; use setUseMultiChannelGainMap for that.
+   * NOTE: Applicable only in encoding scenario
+   */
+  void setForceRgbGainmapMetadata(bool force) { this->mForceRgbGainmapMetadata = force; }
+
+  bool isForceRgbGainmapMetadata() { return this->mForceRgbGainmapMetadata; }
+
   /*!\brief set gain map min and max content boost
    * NOTE: Applicable only in encoding scenario
    *
@@ -596,6 +604,7 @@ class JpegR {
   int mMapDimensionScaleFactor;     // gain map scale factor
   int mMapCompressQuality;          // gain map quality factor
   bool mUseMultiChannelGainMap;     // enable multichannel gain map
+  bool mForceRgbGainmapMetadata;    // force 3-ch ISO metadata even when channels are identical
   float mGamma;                     // gain map gamma parameter
   uhdr_enc_preset_t mEncPreset;     // encoding speed preset
   float mMinContentBoost;           // min content boost recommendation
