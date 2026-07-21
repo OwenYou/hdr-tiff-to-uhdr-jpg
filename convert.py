@@ -16,6 +16,14 @@ With --use-api3 (API-3 path):
   3. API-3: feed P3 PQ raw HDR + the App-0 primary JPEG as compressed SDR;
      libultrahdr computes a multi-channel (RGB) gain map and assembles the
      final UHDR JPEG.
+
+With --bw-sdr (API-1 only):
+  After the Reinhard tone map, the colour SDR image is desaturated to a
+  luma-only greyscale (BT.709 coefficients in linear light) before encoding.
+  The HDR intent remains full colour.  --force-rgb-gainmap is automatically
+  enabled because a greyscale SDR + colour HDR produces symmetric per-channel
+  gain statistics that would otherwise collapse the ISO 21496-1 metadata to
+  1-channel despite the RGB888 gain map.  Not compatible with --use-api3.
 """
 
 import argparse
@@ -71,6 +79,10 @@ def parse_args() -> argparse.Namespace:
                         "entries even when all channels are identical (prevents the library from "
                         "collapsing to a 1-channel luma metadata block). Does not affect gain map "
                         "pixel format. Default: off.")
+    p.add_argument("--bw-sdr", action="store_true", default=False,
+                   help="Desaturate the SDR base to luma-only greyscale (BT.709 coefficients). "
+                        "The HDR intent remains full colour, producing a B&W SDR / colour HDR "
+                        "UHDR JPEG. Implies --force-rgb-gainmap. Not compatible with --use-api3.")
     p.add_argument("--force", "-f", action="store_true",
                    help="Overwrite output if it exists")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -110,6 +122,41 @@ def pack_rgba1010102(rgb_f32: np.ndarray) -> np.ndarray:
     np.bitwise_or(packed, u32[..., 2], out=packed)
     packed |= np.uint32(0xC0000000)
     return packed
+
+
+# Precomputed gamma-2.2 EOTF LUT: uint8 index -> linear float32 (256 entries)
+_GAMMA22_TO_LINEAR = (np.arange(256, dtype=np.float32) / 255.0) ** np.float32(2.2)
+
+# BT.709 luma coefficients for perceptual greyscale in linear light.
+_LUMA_R = np.float32(0.2126)
+_LUMA_G = np.float32(0.7152)
+_LUMA_B = np.float32(0.0722)
+
+
+def _sdr_u32_to_greyscale(rgba_u32: np.ndarray) -> np.ndarray:
+    """Desaturate a packed RGBA8888 uint32 (H,W) to luma-only greyscale.
+
+    Uses a 256-entry gamma-2.2 EOTF LUT for the decode step and a single
+    power operation for the re-encode step.
+    """
+    r = ( rgba_u32        & np.uint32(0xFF)).astype(np.uint8)
+    g = ((rgba_u32 >>  8) & np.uint32(0xFF)).astype(np.uint8)
+    b = ((rgba_u32 >> 16) & np.uint32(0xFF)).astype(np.uint8)
+    a = ((rgba_u32 >> 24) & np.uint32(0xFF)).astype(np.uint32)
+
+    luma_lin = (_GAMMA22_TO_LINEAR[r] * _LUMA_R +
+                _GAMMA22_TO_LINEAR[g] * _LUMA_G +
+                _GAMMA22_TO_LINEAR[b] * _LUMA_B)
+
+    luma_u32 = np.clip(
+        np.power(np.maximum(luma_lin, np.float32(0.0)), np.float32(1.0 / 2.2))
+        * np.float32(255.0) + np.float32(0.5), 0, 255
+    ).astype(np.uint32)
+
+    return (luma_u32
+            | (luma_u32 << np.uint32(8))
+            | (luma_u32 << np.uint32(16))
+            | (a        << np.uint32(24)))
 
 
 def _raw_image(fmt: int, cg: int, ct: int, packed: np.ndarray) -> UhdrRawImage:
@@ -282,6 +329,9 @@ def _encode_api1(packed_p3_hdr: np.ndarray,
 
 def main() -> int:
     args = parse_args()
+    if args.bw_sdr and args.use_api3:
+        print("error: --bw-sdr is not compatible with --use-api3", file=sys.stderr)
+        return 2
     if os.path.exists(args.output) and not args.force:
         print(f"error: {args.output} exists (use --force to overwrite)", file=sys.stderr)
         return 2
@@ -330,6 +380,10 @@ def main() -> int:
         for name, secs in tm_timings.items():
             steps.append((f"  tonemap/{name}", secs))
         t = time.perf_counter()
+        if args.bw_sdr:
+            sdr_rgba8888 = _sdr_u32_to_greyscale(sdr_rgba8888)
+            t = lap("greyscale SDR", t)
+            args.force_rgb_gainmap = True  # symmetric gain stats require forced 3-ch metadata
         jpg = _encode_api1(packed_p3_hdr, sdr_rgba8888, args)
         t = lap(f"API-1 encode ({len(jpg)/1e3:.0f} KB)", t)
 
