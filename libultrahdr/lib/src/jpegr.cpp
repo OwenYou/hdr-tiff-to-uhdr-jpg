@@ -1147,7 +1147,8 @@ uhdr_error_info_t JpegR::appendGainMap(uhdr_compressed_image_t* sdr_intent_compr
         metadata, &iso_secondary_metadata));
 
     UHDR_ERR_CHECK(uhdr_gainmap_metadata_frac::encodeGainmapMetadata(&iso_secondary_metadata,
-                                                                     iso_secondary_data));
+                                                                     iso_secondary_data,
+                                                                     mUseMultiChannelGainMap));
     // iso_secondary_length = 2 bytes representing the length of the package +
     //  + isoNameSpaceLength = 28 bytes length
     //  + length of iso metadata packet = iso_secondary_data.size()

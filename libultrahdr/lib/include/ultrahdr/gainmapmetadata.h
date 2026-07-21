@@ -44,7 +44,8 @@ struct uhdr_gainmap_metadata_frac {
   bool useBaseColorSpace;
 
   static uhdr_error_info_t encodeGainmapMetadata(const uhdr_gainmap_metadata_frac* in_metadata,
-                                                 std::vector<uint8_t>& out_data);
+                                                 std::vector<uint8_t>& out_data,
+                                                 bool forceMultiChannel = false);
 
   static uhdr_error_info_t decodeGainmapMetadata(const std::vector<uint8_t>& in_data,
                                                  uhdr_gainmap_metadata_frac* out_metadata);
