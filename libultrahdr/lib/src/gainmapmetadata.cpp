@@ -110,8 +110,7 @@ bool uhdr_gainmap_metadata_frac::allChannelsIdentical() const {
 }
 
 uhdr_error_info_t uhdr_gainmap_metadata_frac::encodeGainmapMetadata(
-    const uhdr_gainmap_metadata_frac *in_metadata, std::vector<uint8_t> &out_data,
-    bool forceMultiChannel) {
+    const uhdr_gainmap_metadata_frac *in_metadata, std::vector<uint8_t> &out_data) {
   if (in_metadata == nullptr) {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_INVALID_PARAM;
@@ -130,7 +129,7 @@ uhdr_error_info_t uhdr_gainmap_metadata_frac::encodeGainmapMetadata(
   // TODO(maryla): the draft says that this specifies the count of channels of the
   // gain map. But tone mapping is done in RGB space so there are always three
   // channels, even if the gain map is grayscale. Should this be revised?
-  const uint8_t channelCount = (!forceMultiChannel && in_metadata->allChannelsIdentical()) ? 1u : 3u;
+  const uint8_t channelCount = in_metadata->allChannelsIdentical() ? 1u : 3u;
 
   if (channelCount == 3) {
     flags |= kIsMultiChannelMask;
