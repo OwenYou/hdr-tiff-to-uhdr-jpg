@@ -7,5 +7,6 @@ dependencies = [
     "numpy>=2.4.6",
     "opencolorio>=2.5.2",
     "tifffile>=2026.5.15",
+    "imagecodecs>=2024.1.1",
     "tkinterdnd2>=0.4.2",
 ]
