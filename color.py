@@ -19,6 +19,7 @@ _CPU_PROC_ANALYTICAL: OCIO.CPUProcessor | None = None         # analytical gamut
 _CPU_PROC_CLIP: OCIO.CPUProcessor | None = None               # LUT-based gamut-clip processor
 _CPU_PROC_ANALYTICAL_CLIP: OCIO.CPUProcessor | None = None    # analytical gamut-clip processor
 _TONEMAP_PROC: OCIO.CPUProcessor | None = None
+_TONEMAP_GREY_PROC: OCIO.CPUProcessor | None = None
 
 # PQ EOTF constants matching gainmapmath.cpp (kPqM1, kPqM2, kPqC1-C3).
 # pqInvOetf returns [0,1] where 1.0 = 10 000 nits — same scale libultrahdr uses.
@@ -250,6 +251,62 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
     return _TONEMAP_PROC
 
 
+# BT.709 luma coefficients for greyscale in linear light (matches _sdr_u32_to_greyscale)
+_LUMA_R = np.float32(0.2126)
+_LUMA_G = np.float32(0.7152)
+_LUMA_B = np.float32(0.0722)
+
+
+def _build_tonemap_grey_processor() -> OCIO.CPUProcessor:
+    """Build (once) a fused 65³ LUT for P3 PQ -> greyscale SDR tone mapping.
+
+    Identical to _build_tonemap_processor but applies BT.709 luma weighting
+    in linear light (after Reinhard, before γ2.2) so all three output channels
+    carry R=G=B=luma.  The RGBA8888 pack step then produces a true greyscale
+    image with no additional post-processing required.
+    """
+    global _TONEMAP_GREY_PROC
+    if _TONEMAP_GREY_PROC is not None:
+        return _TONEMAP_GREY_PROC
+
+    N = 65
+    headroom    = float(_HDR_PEAK_NITS / _SDR_WHITE_NITS)
+    headroom_sq = np.float32(headroom * headroom)
+
+    coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
+    r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
+    flat = np.stack([r_g.ravel(), g_g.ravel(), b_g.ravel()], axis=-1)  # (N³, 3)
+
+    linear = _pq_inv_oetf(flat) * np.float32(headroom)
+
+    y_max = np.max(linear, axis=-1, keepdims=True)
+    y_max_sdr = (y_max * (np.float32(1.0) + y_max / headroom_sq)
+                 / (np.float32(1.0) + y_max))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
+    sdr = np.clip(linear * scale, np.float32(0.0), np.float32(1.0))
+
+    # BT.709 luma weighting in linear light -> broadcast to all 3 channels
+    luma = (sdr[..., 0:1] * _LUMA_R +
+            sdr[..., 1:2] * _LUMA_G +
+            sdr[..., 2:3] * _LUMA_B)
+    sdr_grey = np.repeat(luma, 3, axis=-1)
+
+    sdr_gamma = np.power(
+        np.clip(sdr_grey, np.float32(0.0), np.float32(1.0)),
+        np.float32(1.0 / 2.2),
+    )
+
+    lut3d = OCIO.Lut3DTransform()
+    lut3d.setGridSize(N)
+    lut3d.setInterpolation(OCIO.INTERP_TETRAHEDRAL)
+    lut3d.setData(sdr_gamma.ravel())
+
+    cfg = OCIO.Config.CreateRaw()
+    _TONEMAP_GREY_PROC = cfg.getProcessor(lut3d).getDefaultCPUProcessor()
+    return _TONEMAP_GREY_PROC
+
+
 def bt2020_pq_to_p3_pq(
     arr_u16: np.ndarray,
     use_lut: bool = True,
@@ -292,6 +349,7 @@ def bt2020_pq_to_p3_pq(
 def p3_pq_to_sdr_rgba8888(
     p3_pq_f32: np.ndarray,
     use_lut: bool = True,
+    bw: bool = False,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """Display P3 PQ float32 (H,W,3) in [0,1] → RGBA8888 uint32 (H,W).
 
@@ -302,6 +360,8 @@ def p3_pq_to_sdr_rgba8888(
       PQ EOTF × headroom + Reinhard + γ 2.2 OETF in one AVX pass.
     use_lut=False (parametric): explicit NumPy steps that exactly reproduce the
       libultrahdr formulae; slower but no LUT approximation.
+    bw=True: desaturate to BT.709 luma greyscale in linear light before γ 2.2.
+      In lut mode a separate pre-baked 65³ LUT is used — no post-processing needed.
 
     NOTE: when use_lut=True, OCIO modifies p3_pq_f32 in-place.  The caller must
     not use p3_pq_f32 after this call (pack_rgba1010102 should be called first).
@@ -315,7 +375,7 @@ def p3_pq_to_sdr_rgba8888(
     timings: dict[str, float] = {}
 
     if use_lut:
-        proc = _build_tonemap_processor()  # pre-warm cache before timing starts
+        proc = _build_tonemap_grey_processor() if bw else _build_tonemap_processor()
 
     # Ensure C-contiguous layout required by OCIO PackedImageDesc.
     # np.ascontiguousarray returns the array itself when already C-contiguous,
@@ -323,7 +383,7 @@ def p3_pq_to_sdr_rgba8888(
     f32 = np.ascontiguousarray(p3_pq_f32)
 
     if use_lut:
-        # Fused OCIO 3D LUT: PQ EOTF + Reinhard + γ 2.2 OETF in one AVX pass.
+        # Fused OCIO 3D LUT: PQ EOTF + Reinhard [+ luma] + γ 2.2 OETF in one AVX pass.
         # f32 is modified in-place; output is SDR gamma-encoded values in [0, 1].
         t = time.perf_counter()
         img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
@@ -345,6 +405,14 @@ def p3_pq_to_sdr_rgba8888(
             scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
         f32 = np.clip(y * scale, np.float32(0.0), np.float32(1.0))
         timings["reinhard"] = time.perf_counter() - t
+
+        if bw:
+            t = time.perf_counter()
+            luma = (f32[..., 0:1] * _LUMA_R +
+                    f32[..., 1:2] * _LUMA_G +
+                    f32[..., 2:3] * _LUMA_B)
+            f32 = np.repeat(luma, 3, axis=-1)
+            timings["luma"] = time.perf_counter() - t
 
         t = time.perf_counter()
         f32 = np.power(f32, np.float32(1.0 / 2.2))

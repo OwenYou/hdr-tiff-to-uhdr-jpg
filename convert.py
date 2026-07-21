@@ -375,14 +375,12 @@ def main() -> int:
         # Default API-1 path: Python Reinhard tone map -> raw HDR + raw SDR -> libultrahdr
         # pack_rgba1010102 is already done; pass f32 directly (OCIO will modify it in-place)
         sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(
-            p3_pq_f32, use_lut=use_lut
+            p3_pq_f32, use_lut=use_lut, bw=args.bw_sdr
         )
         for name, secs in tm_timings.items():
             steps.append((f"  tonemap/{name}", secs))
         t = time.perf_counter()
         if args.bw_sdr:
-            sdr_rgba8888 = _sdr_u32_to_greyscale(sdr_rgba8888)
-            t = lap("greyscale SDR", t)
             args.force_rgb_gainmap = True  # symmetric gain stats require forced 3-ch metadata
         jpg = _encode_api1(packed_p3_hdr, sdr_rgba8888, args)
         t = lap(f"API-1 encode ({len(jpg)/1e3:.0f} KB)", t)
