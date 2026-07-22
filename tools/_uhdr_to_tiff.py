@@ -1,7 +1,7 @@
 """Decode an Ultra HDR JPEG to a BT.2020 PQ uint16 TIFF.
 
 Usage:
-    uv run python tools/_uhdr_to_tiff.py <input.uhdr.jpg> [output.tif]
+    uv run --with pillow python tools/_uhdr_to_tiff.py <input.uhdr.jpg> [output.tif]
 
 Reconstructs the HDR image at full hdr_capacity_max headroom (gainmap_weight=1),
 converts Display P3 linear -> BT.2020 linear, applies PQ OETF, and saves as a
