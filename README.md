@@ -14,7 +14,7 @@ The output carries a multi-channel (RGB) gain map with both renditions in Displa
 | [uv](https://docs.astral.sh/uv/) | package/venv manager |
 | Native library | see platform notes below |
 
-Python package dependencies (`colour-science`, `numpy`, `opencolorio`, `tifffile`, `tkinterdnd2`) are declared in `pyproject.toml` and installed automatically by `uv sync`. No manual `pip install` step needed.
+Python package dependencies (`colour-science`, `imagecodecs`, `numpy`, `opencolorio`, `tifffile`, `tkinterdnd2`) are declared in `pyproject.toml` and installed automatically by `uv sync`. No manual `pip install` step needed. `imagecodecs` is required for LZW-compressed input TIFFs.
 
 `tkinter` (used by `gui.py`) is part of the Python standard library — no extra install.
 
@@ -83,6 +83,12 @@ options:
                    'compress' (default): ACES 1.3 Reference Gamut Compression (soft).
                    'clip': direct hard clip of negative P3 values after the gamut matrix.
   --use-api3       Use the App-0 + API-3 two-pass pipeline instead of the default API-1
+  --force-rgb-gainmap
+                   Force 3-channel ISO 21496-1 gain map metadata (prevents channel
+                   collapse when per-channel gain statistics are identical)
+  --bw-sdr         Desaturate the SDR base to BT.709 luma greyscale (applied in linear
+                   light after Reinhard); the HDR intent remains full colour.
+                   Implies --force-rgb-gainmap. Not compatible with --use-api3.
   --force, -f      Overwrite output if it already exists
   --verbose, -v    Extra diagnostic output
 ```
@@ -116,6 +122,7 @@ Leave the field blank to write each output file next to its source TIFF (e.g. `f
 | Parallel jobs | 1–8 | 2 | Number of files encoded simultaneously |
 | Pipeline | LUT / Parametric | LUT | Color pipeline mode (see `--pipeline`) |
 | Gamut | Compress / Clip | Compress (ACES RGC) | BT.2020→P3 out-of-gamut handling (see `--gamut`) |
+| B&W SDR base | on/off | off | Desaturate SDR base to BT.709 luma greyscale; HDR intent stays colour (`--bw-sdr`). API-1 only. |
 | Force overwrite | on/off | off | Overwrite existing output files (equivalent to `--force`) |
 
 ### Converting
@@ -173,9 +180,11 @@ BT.2020 PQ → Display P3 PQ  (color.bt2020_pq_to_p3_pq)
   ├─► pack RGBA1010102  →  packed_p3_hdr (uint32 H×W)
   │
   ├─► SDR tone map  (color.p3_pq_to_sdr_rgba8888, from p3_pq_f32)
-  │     lut mode:   65³ baked OCIO LUT (PQ → Reinhard → γ 2.2) in one AVX pass
-  │     parametric: unpack → PQ EOTF → Reinhard → γ 2.2 OETF (explicit NumPy)
-  │     → RGBA8888 uint32 (H×W)
+  │     lut mode:            65³ colour LUT (PQ EOTF + Reinhard + γ 2.2) in one AVX pass
+  │     lut + --bw-sdr:      65³ grey LUT (BT.709 luma weighting in linear light, then γ 2.2)
+  │     parametric:          PQ EOTF → Reinhard → γ 2.2 OETF (explicit NumPy)
+  │     parametric + --bw-sdr: + explicit BT.709 luma step after Reinhard
+  │     → RGBA8888 uint32 (H×W)  [--bw-sdr: R=G=B=luma, --force-rgb-gainmap auto-set]
   │
   └─► API-1 encode (raw HDR + raw SDR → RGB gain map)
         uhdr_enc_set_raw_image(packed_p3_hdr, DISPLAY_P3, PQ,   HDR_IMG)
@@ -204,7 +213,7 @@ The gain map is computed from unquantised pixels (no DCT block artefacts in the 
 
 The App-0 pass lets libultrahdr tone-map the PQ image internally and produce the SDR primary JPEG. That JPEG is reused as the compressed SDR input in the API-3 pass — the primary image is never re-encoded (no double-encode quality loss). The gain map is computed from JPEG-quantised SDR pixels.
 
-**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the BT.2020→P3 pipeline into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). With `--gamut compress` (default) the chain goes via ACEScg with ACES 1.3 Reference Gamut Compression; with `--gamut clip` it uses a direct BT.2020→P3 matrix and hard-clips negative values. `p3_pq_to_sdr_rgba8888` bakes PQ EOTF → Reinhard → γ 2.2 OETF into a 65³ LUT. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`.
+**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the BT.2020→P3 pipeline into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). With `--gamut compress` (default) the chain goes via ACEScg with ACES 1.3 Reference Gamut Compression; with `--gamut clip` it uses a direct BT.2020→P3 matrix and hard-clips negative values. `p3_pq_to_sdr_rgba8888` bakes PQ EOTF → Reinhard → γ 2.2 OETF into a 65³ colour LUT; with `--bw-sdr` a second 65³ grey LUT applies BT.709 luma weighting in linear light so all three output channels carry R=G=B=luma — no post-processing step required. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`.
 
 ## Diagnostic tools
 
@@ -231,6 +240,18 @@ uv run python tools/_rewrite_icc_gamma.py <file.uhdr.jpg> [output.jpg]
 
 # Downscale a BT.2020 PQ TIFF in linear light (for resolution-limit testing)
 uv run python tools/_downscale_tiff.py <in.tif> <out.tif> <WxH>
+
+# Decode a UHDR JPEG back to a BT.2020 PQ uint16 TIFF (pillow must be added explicitly)
+uv run --with pillow python tools/_uhdr_to_tiff.py <file.uhdr.jpg> [output.tif]
+
+# Compare linear BT.2020 / P3 nits between a PQ TIFF and its UHDR JPEG encode
+uv run python tools/_compare_hdr_linear.py <input.tif> <input.uhdr.jpg>
+
+# Synthesise a 1-ch vs 3-ch ISO 21496-1 metadata mismatch test pair (grey SDR + RGB squares HDR)
+uv run python tools/_make_rgb_squares_uhdr.py [out_stem] [--quality N]
+
+# Standalone B&W SDR base + colour HDR UHDR encoder (functionality merged into convert.py --bw-sdr)
+uv run python tools/_bw_sdr_colour_hdr.py <input.tif> <output.uhdr.jpg> [options]
 ```
 
 ```cmd
@@ -247,7 +268,7 @@ scripts\_decode_check.bat
 |---|---|
 | `convert.py` | CLI entry point, `pack_rgba1010102`, API-1 / App-0 / API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
-| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888`: Reinhard tone map (baked 65³ LUT or analytical NumPy); `--pipeline {lut,parametric}` selects both |
+| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888(bw=False)`: Reinhard tone map (baked 65³ colour or grey LUT, or analytical NumPy); `bw=True` applies BT.709 luma weighting in linear light; `--pipeline {lut,parametric}` selects both |
 | `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure

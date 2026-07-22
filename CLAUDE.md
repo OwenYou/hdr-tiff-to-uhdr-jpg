@@ -34,6 +34,11 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 #   --gamut compress     BT.2020→P3 out-of-gamut handling: compress (default, ACES 1.3 RGC)
 #                        or clip (direct hard clip after gamut matrix)
 #   --use-api3           use App-0 + API-3 two-pass pipeline instead of API-1 (default)
+#   --force-rgb-gainmap  force 3-channel ISO 21496-1 gain map metadata (prevents channel
+#                        collapse when per-channel gain statistics are identical)
+#   --bw-sdr             desaturate the SDR base to BT.709 luma greyscale (linear light);
+#                        HDR intent remains full colour. Implies --force-rgb-gainmap.
+#                        API-1 only; not compatible with --use-api3.
 
 # Launch the batch GUI (tkinter; wraps convert.py via subprocess)
 uv run python gui.py
@@ -82,6 +87,11 @@ uv run python tools/_dump_icc.py     <file.uhdr.jpg>   # extracts ICC profiles f
 uv run python tools/_compare_icc.py  <a.jpg> <b.jpg>  # side-by-side ICC tag comparison
 uv run python tools/_rewrite_icc_gamma.py <file.jpg> [out.jpg]  # rewrite ICC rTRC/gTRC/bTRC to pure γ 2.2 (para type 0)
 uv run python tools/_downscale_tiff.py <in.tif> <out.tif> <WxH>  # linear-light PQ TIFF downscale
+uv run --with pillow \
+  python tools/_uhdr_to_tiff.py <file.uhdr.jpg> [out.tif]  # decode UHDR JPEG -> BT.2020 PQ uint16 TIFF
+uv run python tools/_compare_hdr_linear.py <in.tif> <in.uhdr.jpg>  # compare linear BT.2020/P3 nits: TIFF vs UHDR decode
+uv run python tools/_make_rgb_squares_uhdr.py [stem] [--quality N]  # synthesise 1-ch vs 3-ch ISO metadata test pair
+uv run python tools/_bw_sdr_colour_hdr.py <in.tif> <out.uhdr.jpg>  # standalone B&W SDR + colour HDR encoder (see --bw-sdr)
 scripts\_smoke.bat                                     # dumpbin /dependents + ctypes load test
 scripts\_decode_check.bat                              # runs ultrahdr_app.exe -m 1 on a known file
 ```
@@ -110,8 +120,11 @@ color.bt2020_pq_to_p3_pq()
 pack_rgba1010102(p3_pq_f32)  ->  packed_p3_hdr  (uint32 H x W)
   |
   +---> [DEFAULT] API-1 encode  (raw HDR + raw SDR):
-  |       color.p3_pq_to_sdr_rgba8888(p3_pq_f32)  ->  sdr_rgba8888 (RGBA8888, sRGB)
-  |         (baked 65³ LUT in lut mode; explicit NumPy Reinhard in parametric mode)
+  |       color.p3_pq_to_sdr_rgba8888(p3_pq_f32, bw=False)  ->  sdr_rgba8888 (RGBA8888, sRGB)
+  |         lut mode:   baked 65³ colour LUT (PQ EOTF + Reinhard + γ 2.2)
+  |         parametric: explicit NumPy Reinhard steps
+  |         [--bw-sdr]: baked 65³ grey LUT (lut) or explicit luma step (parametric)
+  |                     -> R=G=B=BT.709 luma in linear light; --force-rgb-gainmap set
   |       uhdr_enc_set_raw_image(packed_p3_hdr, DISPLAY_P3, PQ, HDR_IMG)
   |       uhdr_enc_set_raw_image(sdr_rgba8888,  DISPLAY_P3, SRGB, SDR_IMG)
   |       uhdr_enc_set_using_multi_channel_gainmap(1)
@@ -140,7 +153,7 @@ primary and gain-map JPEGs in the UHDR container. JPEG scan data byte-stuffs `0x
 
 - **`convert.py`** — argparse + I/O, `pack_rgba1010102` / `_compressed_image` helpers, App-0 and API-3 encoder calls, `extract_primary_jpeg`.
 - **`gui.py`** — tkinter batch GUI. Spawns `convert.py` as a subprocess per file, runs up to 8 jobs in parallel via `ThreadPoolExecutor`, and streams per-file log output back to the main thread via a `queue.Queue`. Screenshot at `docs/GUI.png`.
-- **`color.py`** — `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ; returns float32 directly (no uint16 roundtrip). Gamut handling is selected by `--gamut {compress,clip}`: `compress` routes via ACEScg + ACES 1.3 RGC; `clip` uses a direct BT.2020→P3 matrix and hard-clips negative linear values. In `lut` mode the chosen pipeline is baked into a 97³ OCIO 3D LUT (tetrahedral interpolation); two separate LUTs are lazily built and cached. `p3_pq_to_sdr_rgba8888`: Reinhard tone map from float32 P3 PQ to RGBA8888; in `lut` mode uses a baked 65³ LUT. Both paths controlled by `--pipeline {lut,parametric}`.
+- **`color.py`** — `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ; returns float32 directly (no uint16 roundtrip). Gamut handling is selected by `--gamut {compress,clip}`: `compress` routes via ACEScg + ACES 1.3 RGC; `clip` uses a direct BT.2020→P3 matrix and hard-clips negative linear values. In `lut` mode the chosen pipeline is baked into a 97³ OCIO 3D LUT (tetrahedral interpolation); two separate LUTs are lazily built and cached. `p3_pq_to_sdr_rgba8888(p3_pq_f32, bw=False)`: Reinhard tone map from float32 P3 PQ to RGBA8888; in `lut` mode uses a baked 65³ colour LUT, or a second 65³ grey LUT when `bw=True` (BT.709 luma weighting applied in linear light before γ 2.2, so all channels carry R=G=B=luma with no post-processing). In `parametric` mode `bw=True` inserts an explicit luma step after Reinhard. Both paths controlled by `--pipeline {lut,parametric}`.
 - **`uhdr_ctypes.py`** — `ctypes` binding for `uhdr.dll`. Loads the DLL via `os.add_dll_directory`, defines `UhdrRawImage` / `UhdrCompressedImage` / `UhdrErrorInfo` matching `ultrahdr_api.h`, asserts `sizeof(UhdrRawImage) == 64` to catch ABI drift, and exposes both the raw-image (`uhdr_enc_set_raw_image`) and compressed-image (`uhdr_enc_set_compressed_image`) encoder paths.
 
 ### Color-pipeline invariants worth knowing
@@ -150,6 +163,7 @@ primary and gain-map JPEGs in the UHDR container. JPEG scan data byte-stuffs `0x
 - **Both HDR and SDR renditions are Display P3** — the re-gamut step maps BT.2020 into P3 before either encoder pass, so the output has `use_base_cg=true` (iOS Photos / Lightroom-friendly).
 - **The App-0 primary JPEG is used as-is in API-3** — when the compressed SDR input codec and output codec are both JPEG, libultrahdr uses the JPEG directly as the primary image without re-encoding, avoiding double-encode quality loss.
 - **The output buffer from `uhdr_get_encoded_stream` is owned by the encoder** — we `string_at` it to Python `bytes` *before* calling `uhdr_release_encoder`. The `_ = packed_p3_hdr, sdr_buf` line inside the `try` block in `_encode_api3` keeps both backing buffers alive until after the copy.
+- **`--bw-sdr` always implies `--force-rgb-gainmap`** — a greyscale SDR base produces identical per-channel gain statistics; without the forced flag libultrahdr collapses the ISO 21496-1 gain map metadata to 1-channel, which causes wrong HDR rendering. `--bw-sdr` is incompatible with `--use-api3` because the App-0 tone map is internal to libultrahdr.
 
 ### Ultra HDR JPEG file structure (what the encoder produces)
 
