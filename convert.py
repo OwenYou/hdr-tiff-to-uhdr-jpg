@@ -83,6 +83,11 @@ def parse_args() -> argparse.Namespace:
                    help="Desaturate the SDR base to luma-only greyscale (BT.709 coefficients). "
                         "The HDR intent remains full colour, producing a B&W SDR / colour HDR "
                         "UHDR JPEG. Implies --force-rgb-gainmap. Not compatible with --use-api3.")
+    p.add_argument("--sdr-tm-white", type=float, default=120.0,
+                   help="SDR base tone-map white point in nits (default: 120). "
+                        "Sets the Reinhard headroom for the SDR base image only. "
+                        "Does not affect gain map computation (libultrahdr always "
+                        "uses 203 nit internally).")
     p.add_argument("--force", "-f", action="store_true",
                    help="Overwrite output if it exists")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -347,6 +352,8 @@ def main() -> int:
     rgb16 = load_pq_tiff(args.input)
     H, W = rgb16.shape[:2]
     t = lap(f"load TIFF ({W}x{H})", t)
+
+    color.configure_sdr_tm_white(args.sdr_tm_white)
 
     use_lut = (args.pipeline == "lut")
     gamut_compress = (args.gamut == "compress")

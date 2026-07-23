@@ -86,6 +86,12 @@ options:
   --force-rgb-gainmap
                    Force 3-channel ISO 21496-1 gain map metadata (prevents channel
                    collapse when per-channel gain statistics are identical)
+  --sdr-tm-white N SDR base tone-map white point in nits (default: 120).
+                   Sets the Reinhard headroom for the SDR base image only — does not
+                   affect gain map computation (libultrahdr always uses 203 nit
+                   internally). Lower values (e.g. 100–120) produce a brighter SDR
+                   base on typical consumer displays; 203 matches libultrahdr's
+                   internal App-0 tone map.
   --bw-sdr         Desaturate the SDR base to BT.709 luma greyscale (applied in linear
                    light after Reinhard); the HDR intent remains full colour.
                    Implies --force-rgb-gainmap. Not compatible with --use-api3.
@@ -119,6 +125,7 @@ Leave the field blank to write each output file next to its source TIFF (e.g. `f
 | Gainmap scale | 1–128 | 1 | Gain map downscale factor (1 = full resolution) |
 | Gainmap gamma | > 0 | 1.0 | Encoding gamma applied to the gain map |
 | Peak nits | 203–10000 | 1000 | Target HDR display peak brightness |
+| SDR TM white | > 0 | 120 | Reinhard tone-map white point for the SDR base image in nits. Does not affect gain map computation (libultrahdr uses 203 nit internally). |
 | Parallel jobs | 1–8 | 2 | Number of files encoded simultaneously |
 | Pipeline | LUT / Parametric | LUT | Color pipeline mode (see `--pipeline`) |
 | Gamut | Compress / Clip | Compress (ACES RGC) | BT.2020→P3 out-of-gamut handling (see `--gamut`) |

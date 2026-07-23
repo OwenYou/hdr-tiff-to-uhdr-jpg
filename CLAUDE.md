@@ -39,6 +39,10 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 #   --bw-sdr             desaturate the SDR base to BT.709 luma greyscale (linear light);
 #                        HDR intent remains full colour. Implies --force-rgb-gainmap.
 #                        API-1 only; not compatible with --use-api3.
+#   --sdr-tm-white 120   Reinhard tone-map white point for the SDR base image in nits
+#                        (default: 120). Lower values brighten the SDR base on typical
+#                        consumer displays. Does NOT affect gain map computation —
+#                        libultrahdr always uses 203 nit SDR diffuse white internally.
 
 # Launch the batch GUI (tkinter; wraps convert.py via subprocess)
 uv run python gui.py
@@ -164,6 +168,7 @@ primary and gain-map JPEGs in the UHDR container. JPEG scan data byte-stuffs `0x
 - **The App-0 primary JPEG is used as-is in API-3** — when the compressed SDR input codec and output codec are both JPEG, libultrahdr uses the JPEG directly as the primary image without re-encoding, avoiding double-encode quality loss.
 - **The output buffer from `uhdr_get_encoded_stream` is owned by the encoder** — we `string_at` it to Python `bytes` *before* calling `uhdr_release_encoder`. The `_ = packed_p3_hdr, sdr_buf` line inside the `try` block in `_encode_api3` keeps both backing buffers alive until after the copy.
 - **`--bw-sdr` always implies `--force-rgb-gainmap`** — a greyscale SDR base produces identical per-channel gain statistics; without the forced flag libultrahdr collapses the ISO 21496-1 gain map metadata to 1-channel, which causes wrong HDR rendering. `--bw-sdr` is incompatible with `--use-api3` because the App-0 tone map is internal to libultrahdr.
+- **SDR base TM white point is 120 nit; gain map white point is 203 nit** — `color._SDR_TM_WHITE_NITS` (default 120) controls the Reinhard headroom for the Python SDR tone map only, targeting a typical consumer display. The gain map computation inside libultrahdr is unaffected — it always assumes 203 nit SDR diffuse white per ISO 21496-1. Controllable via `--sdr-tm-white`; `color.configure_sdr_tm_white()` must be called before the first encode to invalidate cached LUTs.
 
 ### Ultra HDR JPEG file structure (what the encoder produces)
 

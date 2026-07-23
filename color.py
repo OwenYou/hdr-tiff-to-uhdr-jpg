@@ -9,7 +9,16 @@ import colour
 import PyOpenColorIO as OCIO
 
 _HDR_PEAK_NITS  = np.float32(10000.0)
+# _SDR_WHITE_NITS is not used by any Python code — the gain map computation is
+# internal to libultrahdr (C library) and assumes 203 nit SDR diffuse white per
+# ISO 21496-1.  This constant is kept as a reference so the 203/100 split is
+# visible in one place alongside _SDR_TM_WHITE_NITS.
 _SDR_WHITE_NITS = np.float32(203.0)
+# Target white level for the SDR base tone map only.  Set to 100 nit (typical
+# consumer display) rather than 203 nit so that diffuse white in the SDR image
+# maps to peak code value, giving a correct-looking result on SDR-only displays.
+# This does NOT affect the gain map: libultrahdr always uses 203 nit internally.
+_SDR_TM_WHITE_NITS = np.float32(120.0)
 
 # ACES 1.3 Reference Gamut Compression parameters (AMPAS spec defaults).
 _RGC_PARAMS = [1.147, 1.264, 1.312, 0.815, 0.803, 0.880, 1.2]
@@ -20,6 +29,18 @@ _CPU_PROC_CLIP: OCIO.CPUProcessor | None = None               # LUT-based gamut-
 _CPU_PROC_ANALYTICAL_CLIP: OCIO.CPUProcessor | None = None    # analytical gamut-clip processor
 _TONEMAP_PROC: OCIO.CPUProcessor | None = None
 _TONEMAP_GREY_PROC: OCIO.CPUProcessor | None = None
+
+
+def configure_sdr_tm_white(nits: float) -> None:
+    """Override the SDR base tone-map white point and invalidate cached LUTs.
+
+    Call once before the first encode.  Has no effect on gain map computation —
+    libultrahdr's internal gain map math always uses 203 nit SDR diffuse white.
+    """
+    global _SDR_TM_WHITE_NITS, _TONEMAP_PROC, _TONEMAP_GREY_PROC
+    _SDR_TM_WHITE_NITS = np.float32(nits)
+    _TONEMAP_PROC = None
+    _TONEMAP_GREY_PROC = None
 
 # PQ EOTF constants matching gainmapmath.cpp (kPqM1, kPqM2, kPqC1-C3).
 # pqInvOetf returns [0,1] where 1.0 = 10 000 nits — same scale libultrahdr uses.
@@ -217,7 +238,7 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
         return _TONEMAP_PROC
 
     N = 65  # 65³ ≈ 274 K LUT samples; b varies fastest to match OCIO's layout
-    headroom    = float(_HDR_PEAK_NITS / _SDR_WHITE_NITS)   # ≈ 49.26
+    headroom    = float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)   # ≈ 100.0 (10000/100)
     headroom_sq = np.float32(headroom * headroom)
 
     coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
@@ -270,7 +291,7 @@ def _build_tonemap_grey_processor() -> OCIO.CPUProcessor:
         return _TONEMAP_GREY_PROC
 
     N = 65
-    headroom    = float(_HDR_PEAK_NITS / _SDR_WHITE_NITS)
+    headroom    = float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)
     headroom_sq = np.float32(headroom * headroom)
 
     coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
@@ -396,7 +417,7 @@ def p3_pq_to_sdr_rgba8888(
         timings["pq_decode"] = time.perf_counter() - t
 
         t = time.perf_counter()
-        headroom = _HDR_PEAK_NITS / _SDR_WHITE_NITS
+        headroom = _HDR_PEAK_NITS / _SDR_TM_WHITE_NITS
         y = linear * headroom
         y_max = np.max(y, axis=-1, keepdims=True)
         y_max_sdr = (y_max * (np.float32(1.0) + y_max / (headroom * headroom))

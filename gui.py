@@ -50,6 +50,7 @@ def _run_one(
         "--gainmap-scale", str(opts["gainmap_scale"]),
         "--gainmap-gamma", str(opts["gainmap_gamma"]),
         "--peak-nits",     str(opts["peak_nits"]),
+        "--sdr-tm-white",  str(opts["sdr_tm_white"]),
     ]
     if opts["force"]:
         cmd.append("--force")
@@ -179,6 +180,7 @@ class App(TkinterDnD.Tk):
         self._gm_scale_var    = tk.IntVar(value=1)
         self._gm_gamma_var    = tk.StringVar(value="1.0")
         self._peak_nits_var   = tk.StringVar(value="1000")
+        self._sdr_tm_white_var = tk.StringVar(value="120")
         self._jobs_var        = tk.IntVar(value=2)
         self._force_var       = tk.BooleanVar(value=False)
         self._pipeline_var    = tk.StringVar(value="LUT")
@@ -187,11 +189,12 @@ class App(TkinterDnD.Tk):
         self._bw_sdr_var            = tk.BooleanVar(value=False)
 
         fields = [
-            ("Quality (0–100):",       self._quality_var,   "spin",  0,    100),
-            ("Gainmap scale (1–128):", self._gm_scale_var,  "spin",  1,    128),
-            ("Gainmap gamma:",         self._gm_gamma_var,  "entry", None, None),
-            ("Peak nits (203–10000):", self._peak_nits_var, "entry", None, None),
-            ("Parallel jobs (1–8):",   self._jobs_var,      "spin",  1,    8),
+            ("Quality (0–100):",       self._quality_var,      "spin",  0,    100),
+            ("Gainmap scale (1–128):", self._gm_scale_var,     "spin",  1,    128),
+            ("Gainmap gamma:",         self._gm_gamma_var,     "entry", None, None),
+            ("Peak nits (203–10000):", self._peak_nits_var,    "entry", None, None),
+            ("SDR TM white (nits):",   self._sdr_tm_white_var, "entry", None, None),
+            ("Parallel jobs (1–8):",   self._jobs_var,         "spin",  1,    8),
         ]
         for n, (label, var, kind, lo, hi) in enumerate(fields):
             col = (n % 2) * 3
@@ -204,12 +207,12 @@ class App(TkinterDnD.Tk):
             w.grid(row=row, column=col + 1, sticky="w", padx=(0, 24), pady=2)
 
         ttk.Label(g, text="Pipeline:", anchor="e").grid(
-            row=2, column=3, sticky="e", padx=(8, 4)
+            row=3, column=3, sticky="e", padx=(8, 4)
         )
         ttk.Combobox(
             g, textvariable=self._pipeline_var,
             values=["LUT", "Parametric"], state="readonly", width=11,
-        ).grid(row=2, column=4, sticky="w", padx=(0, 24), pady=2)
+        ).grid(row=3, column=4, sticky="w", padx=(0, 24), pady=2)
 
         ttk.Label(g, text="Gamut:", anchor="e").grid(
             row=3, column=0, sticky="e", padx=(8, 4)
@@ -326,18 +329,20 @@ class App(TkinterDnD.Tk):
             gs = int(self._gm_scale_var.get())
             gg = float(self._gm_gamma_var.get())
             pn = float(self._peak_nits_var.get())
+            stw = float(self._sdr_tm_white_var.get())
             jb = int(self._jobs_var.get())
         except (ValueError, tk.TclError) as exc:
             raise ValueError(f"Invalid option value: {exc}") from exc
         return {
-            "quality":       max(0,     min(100,   q)),
-            "gainmap_scale": max(1,     min(128,   gs)),
-            "gainmap_gamma": max(0.001,            gg),
-            "peak_nits":     max(203.0, min(10000, pn)),
-            "jobs":          max(1,     min(8,     jb)),
-            "force":         self._force_var.get(),
-            "pipeline":      self._pipeline_var.get().lower(),
-            "gamut":         "clip" if self._gamut_var.get() == "Clip" else "compress",
+            "quality":         max(0,     min(100,   q)),
+            "gainmap_scale":   max(1,     min(128,   gs)),
+            "gainmap_gamma":   max(0.001,            gg),
+            "peak_nits":       max(203.0, min(10000, pn)),
+            "sdr_tm_white":    max(1.0,   min(10000, stw)),
+            "jobs":            max(1,     min(8,     jb)),
+            "force":           self._force_var.get(),
+            "pipeline":        self._pipeline_var.get().lower(),
+            "gamut":           "clip" if self._gamut_var.get() == "Clip" else "compress",
             "force_rgb_gainmap": self._force_rgb_gainmap_var.get(),
             "bw_sdr":            self._bw_sdr_var.get(),
         }
