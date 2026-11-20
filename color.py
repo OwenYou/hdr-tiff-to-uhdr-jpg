@@ -30,6 +30,50 @@ _CPU_PROC_ANALYTICAL_CLIP: OCIO.CPUProcessor | None = None    # analytical gamut
 _TONEMAP_PROC: OCIO.CPUProcessor | None = None
 _TONEMAP_GREY_PROC: OCIO.CPUProcessor | None = None
 
+# SDR tone-map algorithm for the SDR base image (does not affect the gain map).
+TONEMAP_ALGORITHMS = ("reinhard", "clip")
+_SDR_TONEMAP = "reinhard"
+
+
+def configure_sdr_tonemap(name: str) -> None:
+    """Select the SDR tone-map algorithm and invalidate cached LUTs.
+
+    Call once before the first encode.  See TONEMAP_ALGORITHMS.
+    """
+    global _SDR_TONEMAP, _TONEMAP_PROC, _TONEMAP_GREY_PROC
+    if name not in TONEMAP_ALGORITHMS:
+        raise ValueError(f"unknown tone-map algorithm {name!r}; choose from {TONEMAP_ALGORITHMS}")
+    _SDR_TONEMAP = name
+    _TONEMAP_PROC = None
+    _TONEMAP_GREY_PROC = None
+
+
+def _tm_curve(y: np.ndarray, headroom: float, name: str) -> np.ndarray:
+    """Scalar tone curve applied to the max-channel value.
+
+    y is linear light relative to the SDR TM white (1.0 = TM white, range
+    [0, headroom]).  Every curve maps 0 -> 0 and headroom -> 1.0; the other
+    channels are scaled by the same ratio so hue is preserved.
+    """
+    h = np.float32(headroom)
+    one = np.float32(1.0)
+    if name == "reinhard":
+        # Extended Reinhard (ReinhardMap in jpegr.cpp)
+        return y * (one + y / (h * h)) / (one + y)
+    if name == "clip":
+        # Hard clip at the SDR TM white
+        return np.minimum(y, one)
+    raise ValueError(name)
+
+
+def _tonemap_linear(linear: np.ndarray, headroom: float) -> np.ndarray:
+    """Apply the configured SDR tone map to linear (...,3) values (1.0 = TM white)."""
+    y_max = np.max(linear, axis=-1, keepdims=True)
+    y_max_sdr = _tm_curve(y_max, headroom, _SDR_TONEMAP)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
+    return np.clip(linear * scale, np.float32(0.0), np.float32(1.0))
+
 
 def configure_sdr_tm_white(nits: float) -> None:
     """Override the SDR base tone-map white point and invalidate cached LUTs.
@@ -227,7 +271,7 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
     Encodes the complete pipeline into a 65³ 3D LUT in PQ signal space so that
     all five tone-map stages run in a single AVX-vectorised OCIO traversal:
       PQ EOTF (10-bit signal → linear × headroom)
-      → per-pixel max-channel Reinhard: y*(1+y/h²)/(1+y)
+      → configured max-channel tone curve (default Reinhard)
       → γ 2.2 OETF (linear [0,1] → gamma-encoded [0,1])
 
     65 grid points per channel (spacing ≈ 0.016 in PQ signal) is sufficient for
@@ -239,7 +283,6 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
 
     N = 65  # 65³ ≈ 274 K LUT samples; b varies fastest to match OCIO's layout
     headroom    = float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)   # ≈ 100.0 (10000/100)
-    headroom_sq = np.float32(headroom * headroom)
 
     coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
     r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
@@ -249,12 +292,7 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
     linear = _pq_inv_oetf(flat) * np.float32(headroom)  # (N³, 3), range [0, headroom]
 
     # Reinhard tone mapping (ReinhardMap in jpegr.cpp)
-    y_max = np.max(linear, axis=-1, keepdims=True)
-    y_max_sdr = (y_max * (np.float32(1.0) + y_max / headroom_sq)
-                 / (np.float32(1.0) + y_max))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
-    sdr = np.clip(linear * scale, np.float32(0.0), np.float32(1.0))
+    sdr = _tonemap_linear(linear, headroom)
 
     # γ 2.2 OETF: linear [0,1] → gamma-encoded [0,1]
     sdr_gamma = np.power(
@@ -292,7 +330,6 @@ def _build_tonemap_grey_processor() -> OCIO.CPUProcessor:
 
     N = 65
     headroom    = float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)
-    headroom_sq = np.float32(headroom * headroom)
 
     coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
     r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
@@ -300,12 +337,7 @@ def _build_tonemap_grey_processor() -> OCIO.CPUProcessor:
 
     linear = _pq_inv_oetf(flat) * np.float32(headroom)
 
-    y_max = np.max(linear, axis=-1, keepdims=True)
-    y_max_sdr = (y_max * (np.float32(1.0) + y_max / headroom_sq)
-                 / (np.float32(1.0) + y_max))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
-    sdr = np.clip(linear * scale, np.float32(0.0), np.float32(1.0))
+    sdr = _tonemap_linear(linear, headroom)
 
     # BT.709 luma weighting in linear light -> broadcast to all 3 channels
     luma = (sdr[..., 0:1] * _LUMA_R +
@@ -418,13 +450,7 @@ def p3_pq_to_sdr_rgba8888(
 
         t = time.perf_counter()
         headroom = _HDR_PEAK_NITS / _SDR_TM_WHITE_NITS
-        y = linear * headroom
-        y_max = np.max(y, axis=-1, keepdims=True)
-        y_max_sdr = (y_max * (np.float32(1.0) + y_max / (headroom * headroom))
-                     / (np.float32(1.0) + y_max))
-        with np.errstate(invalid="ignore", divide="ignore"):
-            scale = np.where(y_max > np.float32(0.0), y_max_sdr / y_max, np.float32(0.0))
-        f32 = np.clip(y * scale, np.float32(0.0), np.float32(1.0))
+        f32 = _tonemap_linear(linear * headroom, headroom)
         timings["reinhard"] = time.perf_counter() - t
 
         if bw:

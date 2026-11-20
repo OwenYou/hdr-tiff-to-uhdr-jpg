@@ -71,6 +71,9 @@ def parse_args() -> argparse.Namespace:
                    help="Gamut handling for BT.2020 → Display P3. "
                         "'compress' (default): ACES 1.3 Reference Gamut Compression. "
                         "'clip': direct hard clip of out-of-gamut values.")
+    p.add_argument("--tonemap", choices=list(color.TONEMAP_ALGORITHMS), default="reinhard",
+                   help="SDR base tone-map algorithm (default: reinhard). API-1 only; "
+                        "ignored with --use-api3 (libultrahdr tone-maps internally).")
     p.add_argument("--use-api3", action="store_true",
                    help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
                         "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
@@ -354,6 +357,7 @@ def main() -> int:
     t = lap(f"load TIFF ({W}x{H})", t)
 
     color.configure_sdr_tm_white(args.sdr_tm_white)
+    color.configure_sdr_tonemap(args.tonemap)
 
     use_lut = (args.pipeline == "lut")
     gamut_compress = (args.gamut == "compress")

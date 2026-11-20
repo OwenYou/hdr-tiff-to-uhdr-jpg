@@ -16,6 +16,12 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 PROJECT_DIR = Path(__file__).parent
 
+TONEMAP_LABELS = {
+    "reinhard": "Reinhard",
+    "clip":     "Clip",
+}
+TONEMAP_KEYS = {v: k for k, v in TONEMAP_LABELS.items()}
+
 _MSG_LOG        = "log"
 _MSG_FILE_START = "file_start"   # payload: name
 _MSG_FILE_DONE  = "file_done"    # payload: (done_1based, total, status, src_path)
@@ -56,6 +62,8 @@ def _run_one(
         cmd.append("--force")
     if opts["pipeline"] != "LUT":
         cmd += ["--pipeline", opts["pipeline"]]
+    if opts.get("tonemap") and opts["tonemap"] != "reinhard":
+        cmd += ["--tonemap", opts["tonemap"]]
     if opts.get("gamut") == "clip":
         cmd += ["--gamut", "clip"]
     if opts.get("force_rgb_gainmap"):
@@ -169,12 +177,9 @@ class App(TkinterDnD.Tk):
         ttk.Button(out_row, text="Browse…", command=self._browse_out).pack(side="left", padx=(0, 4))
         ttk.Button(out_row, text="Clear",   command=lambda: self._out_var.set("")).pack(side="left")
 
-        # ── Encoder options ──────────────────────────────────────────────────
+        # ── Encoder options (three groups) ───────────────────────────────────
         frm_opts = ttk.LabelFrame(self, text="Encoder options")
         frm_opts.pack(fill="x", **PAD)
-
-        g = ttk.Frame(frm_opts)
-        g.pack(padx=8, pady=6, anchor="w")
 
         self._quality_var     = tk.IntVar(value=95)
         self._gm_scale_var    = tk.IntVar(value=1)
@@ -185,56 +190,59 @@ class App(TkinterDnD.Tk):
         self._force_var       = tk.BooleanVar(value=False)
         self._pipeline_var    = tk.StringVar(value="LUT")
         self._gamut_var       = tk.StringVar(value="Compress (ACES RGC)")
+        self._tonemap_var     = tk.StringVar(value=TONEMAP_LABELS["reinhard"])
         self._force_rgb_gainmap_var = tk.BooleanVar(value=False)
         self._bw_sdr_var            = tk.BooleanVar(value=False)
 
-        fields = [
-            ("Quality (0–100):",       self._quality_var,      "spin",  0,    100),
-            ("Gainmap scale (1–128):", self._gm_scale_var,     "spin",  1,    128),
-            ("Gainmap gamma:",         self._gm_gamma_var,     "entry", None, None),
-            ("Peak nits (203–10000):", self._peak_nits_var,    "entry", None, None),
-            ("SDR TM white (nits):",   self._sdr_tm_white_var, "entry", None, None),
-            ("Parallel jobs (1–8):",   self._jobs_var,         "spin",  1,    8),
-        ]
-        for n, (label, var, kind, lo, hi) in enumerate(fields):
-            col = (n % 2) * 3
-            row = n // 2
-            ttk.Label(g, text=label, anchor="e").grid(row=row, column=col, sticky="e", padx=(8, 4))
-            if kind == "spin":
-                w: ttk.Widget = ttk.Spinbox(g, from_=lo, to=hi, textvariable=var, width=8)
-            else:
-                w = ttk.Entry(g, textvariable=var, width=10)
-            w.grid(row=row, column=col + 1, sticky="w", padx=(0, 24), pady=2)
+        def add_row(parent, n, label, widget):
+            # Two label/widget pairs per row (index n fills left-to-right, top-to-bottom)
+            row, col = n // 2, (n % 2) * 2
+            ttk.Label(parent, text=label, anchor="e").grid(
+                row=row, column=col, sticky="e", padx=(8, 4), pady=2)
+            widget.grid(row=row, column=col + 1, sticky="w", padx=(0, 16), pady=2)
 
-        ttk.Label(g, text="Pipeline:", anchor="e").grid(
-            row=3, column=3, sticky="e", padx=(8, 4)
-        )
-        ttk.Combobox(
-            g, textvariable=self._pipeline_var,
-            values=["LUT", "Parametric"], state="readonly", width=11,
-        ).grid(row=3, column=4, sticky="w", padx=(0, 24), pady=2)
+        def spin(parent, var, lo, hi):
+            return ttk.Spinbox(parent, from_=lo, to=hi, textvariable=var, width=8)
 
-        ttk.Label(g, text="Gamut:", anchor="e").grid(
-            row=3, column=0, sticky="e", padx=(8, 4)
-        )
-        ttk.Combobox(
-            g, textvariable=self._gamut_var,
-            values=["Compress (ACES RGC)", "Clip"], state="readonly", width=18,
-        ).grid(row=3, column=1, sticky="w", padx=(0, 24), pady=2)
+        def entry(parent, var):
+            return ttk.Entry(parent, textvariable=var, width=10)
 
-        ttk.Checkbutton(g, text="Force overwrite  (--force)", variable=self._force_var).grid(
-            row=4, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0)
-        )
+        def combo(parent, var, values, width):
+            return ttk.Combobox(parent, textvariable=var, values=values,
+                                state="readonly", width=width)
 
+        # 1. Quality and Performance
+        grp1 = ttk.LabelFrame(frm_opts, text="Quality and Performance")
+        grp1.pack(fill="x", padx=6, pady=(4, 2))
+        grp1.columnconfigure((1, 3), weight=1)
+        add_row(grp1, 0, "Quality (0–100):",       spin(grp1, self._quality_var, 0, 100))
+        add_row(grp1, 1, "Parallel jobs (1–8):",   spin(grp1, self._jobs_var, 1, 8))
+        add_row(grp1, 2, "Pipeline:",              combo(grp1, self._pipeline_var, ["LUT", "Parametric"], 11))
+        add_row(grp1, 3, "Gainmap scale (1–128):", spin(grp1, self._gm_scale_var, 1, 128))
+
+        # 2. HDR
+        grp2 = ttk.LabelFrame(frm_opts, text="HDR")
+        grp2.pack(fill="x", padx=6, pady=2)
+        grp2.columnconfigure((1, 3), weight=1)
+        add_row(grp2, 0, "Gainmap gamma:",         entry(grp2, self._gm_gamma_var))
+        add_row(grp2, 1, "Peak nits (203–10000):", entry(grp2, self._peak_nits_var))
+        add_row(grp2, 2, "SDR TM white (nits):",   entry(grp2, self._sdr_tm_white_var))
+        add_row(grp2, 3, "Tone mapping:",          combo(grp2, self._tonemap_var, list(TONEMAP_LABELS.values()), 20))
+        add_row(grp2, 4, "Gamut:",                 combo(grp2, self._gamut_var, ["Compress (ACES RGC)", "Clip"], 20))
+
+        # 3. Others
+        grp3 = ttk.LabelFrame(frm_opts, text="Others")
+        grp3.pack(fill="x", padx=6, pady=(2, 6))
+        ttk.Checkbutton(grp3, text="Force overwrite  (--force)", variable=self._force_var).pack(
+            anchor="w", padx=8, pady=(2, 0))
         ttk.Checkbutton(
-            g, text="Force RGB gain map metadata  (--force-rgb-gainmap)",
+            grp3, text="Force RGB gain map metadata  (--force-rgb-gainmap)",
             variable=self._force_rgb_gainmap_var,
-        ).grid(row=5, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(2, 0))
-
+        ).pack(anchor="w", padx=8, pady=(2, 0))
         ttk.Checkbutton(
-            g, text="B&W SDR base / colour HDR  (--bw-sdr)",
+            grp3, text="B&W SDR base / colour HDR  (--bw-sdr)",
             variable=self._bw_sdr_var,
-        ).grid(row=6, column=0, columnspan=5, sticky="w", padx=(8, 0), pady=(2, 0))
+        ).pack(anchor="w", padx=8, pady=(2, 2))
 
         # ── Convert / Cancel button ──────────────────────────────────────────
         self._convert_btn = ttk.Button(self, text="Convert", command=self._start, width=28)
@@ -342,6 +350,7 @@ class App(TkinterDnD.Tk):
             "jobs":            max(1,     min(8,     jb)),
             "force":           self._force_var.get(),
             "pipeline":        self._pipeline_var.get().lower(),
+            "tonemap":         TONEMAP_KEYS.get(self._tonemap_var.get(), "reinhard"),
             "gamut":           "clip" if self._gamut_var.get() == "Clip" else "compress",
             "force_rgb_gainmap": self._force_rgb_gainmap_var.get(),
             "bw_sdr":            self._bw_sdr_var.get(),

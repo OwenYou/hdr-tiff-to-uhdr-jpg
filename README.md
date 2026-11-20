@@ -82,6 +82,11 @@ options:
                    BT.2020 → Display P3 out-of-gamut handling.
                    'compress' (default): ACES 1.3 Reference Gamut Compression (soft).
                    'clip': direct hard clip of negative P3 values after the gamut matrix.
+  --tonemap {reinhard,clip}
+                   SDR base tone-map algorithm (default: reinhard). All curves act on
+                   the max channel (hue-preserving) and are normalised to reach 1.0 at
+                   the headroom set by --sdr-tm-white / --peak-nits. 'clip' = hard clip
+                   at the TM white. API-1 only; ignored with --use-api3.
   --use-api3       Use the App-0 + API-3 two-pass pipeline instead of the default API-1
   --force-rgb-gainmap
                    Force 3-channel ISO 21496-1 gain map metadata (prevents channel
@@ -119,18 +124,34 @@ Leave the field blank to write each output file next to its source TIFF (e.g. `f
 
 ### Encoder options
 
+Options are organised into three groups in the GUI; the first two lay out their fields in two columns:
+
+**Quality and Performance**
+
 | Option | Range | Default | Effect |
 |---|---|---|---|
 | Quality | 0–100 | 95 | JPEG quality for the base image and gain map |
-| Gainmap scale | 1–128 | 1 | Gain map downscale factor (1 = full resolution) |
-| Gainmap gamma | > 0 | 1.0 | Encoding gamma applied to the gain map |
-| Peak nits | 203–10000 | 1000 | Target HDR display peak brightness |
-| SDR TM white | > 0 | 120 | Reinhard tone-map white point for the SDR base image in nits. Does not affect gain map computation (libultrahdr uses 203 nit internally). |
 | Parallel jobs | 1–8 | 2 | Number of files encoded simultaneously |
 | Pipeline | LUT / Parametric | LUT | Color pipeline mode (see `--pipeline`) |
+| Gainmap scale | 1–128 | 1 | Gain map downscale factor (1 = full resolution) |
+
+**HDR**
+
+| Option | Range | Default | Effect |
+|---|---|---|---|
+| Gainmap gamma | > 0 | 1.0 | Encoding gamma applied to the gain map |
+| Peak nits | 203–10000 | 1000 | Target HDR display peak brightness |
+| SDR TM white | > 0 | 120 | Tone-map white point for the SDR base image in nits. Does not affect gain map computation (libultrahdr uses 203 nit internally). |
+| Tone mapping | Reinhard / Clip | Reinhard | SDR base tone-map algorithm (see `--tonemap`) |
 | Gamut | Compress / Clip | Compress (ACES RGC) | BT.2020→P3 out-of-gamut handling (see `--gamut`) |
-| B&W SDR base | on/off | off | Desaturate SDR base to BT.709 luma greyscale; HDR intent stays colour (`--bw-sdr`). API-1 only. |
-| Force overwrite | on/off | off | Overwrite existing output files (equivalent to `--force`) |
+
+**Others**
+
+| Option | Default | Effect |
+|---|---|---|
+| Force overwrite | off | Overwrite existing output files (`--force`) |
+| Force RGB gain map metadata | off | Force 3-channel ISO 21496-1 metadata (`--force-rgb-gainmap`) |
+| B&W SDR base | off | Desaturate SDR base to BT.709 luma greyscale; HDR intent stays colour (`--bw-sdr`). API-1 only. |
 
 ### Converting
 
@@ -220,7 +241,7 @@ The gain map is computed from unquantised pixels (no DCT block artefacts in the 
 
 The App-0 pass lets libultrahdr tone-map the PQ image internally and produce the SDR primary JPEG. That JPEG is reused as the compressed SDR input in the API-3 pass — the primary image is never re-encoded (no double-encode quality loss). The gain map is computed from JPEG-quantised SDR pixels.
 
-**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the BT.2020→P3 pipeline into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). With `--gamut compress` (default) the chain goes via ACEScg with ACES 1.3 Reference Gamut Compression; with `--gamut clip` it uses a direct BT.2020→P3 matrix and hard-clips negative values. `p3_pq_to_sdr_rgba8888` bakes PQ EOTF → Reinhard → γ 2.2 OETF into a 65³ colour LUT; with `--bw-sdr` a second 65³ grey LUT applies BT.709 luma weighting in linear light so all three output channels carry R=G=B=luma — no post-processing step required. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`.
+**Color pipeline** (`color.py`): `bt2020_pq_to_p3_pq` bakes the BT.2020→P3 pipeline into a 97³ 3D LUT and applies it in a single AVX-vectorised tetrahedral-interpolation pass, returning float32 directly (no uint16 intermediate). With `--gamut compress` (default) the chain goes via ACEScg with ACES 1.3 Reference Gamut Compression; with `--gamut clip` it uses a direct BT.2020→P3 matrix and hard-clips negative values. `p3_pq_to_sdr_rgba8888` bakes PQ EOTF → tone curve (`--tonemap`, default Reinhard) → γ 2.2 OETF into a 65³ colour LUT; with `--bw-sdr` a second 65³ grey LUT applies BT.709 luma weighting in linear light so all three output channels carry R=G=B=luma — no post-processing step required. Both steps fall back to the explicit NumPy/OCIO analytical path under `--pipeline parametric`.
 
 ## Diagnostic tools
 
@@ -275,7 +296,7 @@ scripts\_decode_check.bat
 |---|---|
 | `convert.py` | CLI entry point, `pack_rgba1010102`, API-1 / App-0 / API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
-| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888(bw=False)`: Reinhard tone map (baked 65³ colour or grey LUT, or analytical NumPy); `bw=True` applies BT.709 luma weighting in linear light; `--pipeline {lut,parametric}` selects both |
+| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888(bw=False)`: SDR tone map (`--tonemap {reinhard,clip}`, max-channel curve) (baked 65³ colour or grey LUT, or analytical NumPy); `bw=True` applies BT.709 luma weighting in linear light; `--pipeline {lut,parametric}` selects both |
 | `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure
