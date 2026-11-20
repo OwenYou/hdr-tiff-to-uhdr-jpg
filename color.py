@@ -31,16 +31,26 @@ _TONEMAP_PROC: OCIO.CPUProcessor | None = None
 _TONEMAP_GREY_PROC: OCIO.CPUProcessor | None = None
 
 # SDR tone-map algorithm for the SDR base image (does not affect the gain map).
-TONEMAP_ALGORITHMS = ("reinhard", "clip")
+TONEMAP_ALGORITHMS = ("reinhard", "clip", "rcm_drt")
 _SDR_TONEMAP = "reinhard"
+# RCM DRT parameters: Max Input = HDR peak nits, Adaptation = mid-anchor nits.
+# (Max Output is the SDR TM white, _SDR_TM_WHITE_NITS.)
+_RCM_PEAK_NITS = 1000.0
+_RCM_ADAPTATION = 9.0
 
 
-def configure_sdr_tonemap(name: str) -> None:
+def configure_sdr_tonemap(name: str, adaptation: float = 9.0,
+                          peak_nits: float = 1000.0) -> None:
     """Select the SDR tone-map algorithm and invalidate cached LUTs.
 
     Call once before the first encode.  See TONEMAP_ALGORITHMS.
+    adaptation / peak_nits are used by "rcm_drt" only (Max Input = peak_nits,
+    Max Output = the SDR TM white set via configure_sdr_tm_white).
     """
     global _SDR_TONEMAP, _TONEMAP_PROC, _TONEMAP_GREY_PROC
+    global _RCM_PEAK_NITS, _RCM_ADAPTATION
+    _RCM_PEAK_NITS = float(peak_nits)
+    _RCM_ADAPTATION = float(adaptation)
     if name not in TONEMAP_ALGORITHMS:
         raise ValueError(f"unknown tone-map algorithm {name!r}; choose from {TONEMAP_ALGORITHMS}")
     _SDR_TONEMAP = name
@@ -63,7 +73,36 @@ def _tm_curve(y: np.ndarray, headroom: float, name: str) -> np.ndarray:
     if name == "clip":
         # Hard clip at the SDR TM white
         return np.minimum(y, one)
+    if name == "rcm_drt":
+        return _rcm_drt_curve(y)
     raise ValueError(name)
+
+
+def _rcm_drt_curve(y: np.ndarray) -> np.ndarray:
+    """RCM DRT luminance curve: rational (Mobius) shoulder through three anchors.
+
+    y is linear light with 1.0 = SDR TM white (= Max Output).  The curve is
+    evaluated in nits (x = nits/100), then divided by Max Output so Max Input
+    maps exactly to 1.0 -> full SDR code value after gamma encoding.
+
+      Src = Max Input (peak nits), Dst = Max Output (SDR TM white nits)
+      x1  = min(0.95*Src, 0.6*Dst, max(Adaptation, 0.1))   mid anchor (nits)
+      y1  = 3*sqrt(x1)                                      (clamped < Dst)
+      c3  = (y1/x1 - Dst/Src) / ((Dst - y1)/100)
+      c2  = y1/x1 + c3*y1/100
+      out = c2*x / (1 + c3*x)                  [units of 100 nit]
+    """
+    src = _RCM_PEAK_NITS
+    dst = float(_SDR_TM_WHITE_NITS)
+    if src <= dst:                       # nothing to compress: hard clip at Dst
+        return np.minimum(y, np.float32(1.0))
+    x1 = min(0.95 * src, 0.6 * dst, max(_RCM_ADAPTATION, 0.1))
+    y1 = min(3.0 * np.sqrt(x1), 0.95 * dst)
+    c3 = (y1 / x1 - dst / src) / ((dst - y1) / 100.0)
+    c2 = y1 / x1 + c3 * y1 / 100.0
+    x = np.maximum(y, np.float32(0.0)) * np.float32(dst / 100.0)
+    out = np.float32(c2) * x / (np.float32(1.0) + np.float32(c3) * x)
+    return out * np.float32(100.0 / dst)
 
 
 def _tonemap_linear(linear: np.ndarray, headroom: float) -> np.ndarray:

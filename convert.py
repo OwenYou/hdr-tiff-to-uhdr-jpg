@@ -74,6 +74,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tonemap", choices=list(color.TONEMAP_ALGORITHMS), default="reinhard",
                    help="SDR base tone-map algorithm (default: reinhard). API-1 only; "
                         "ignored with --use-api3 (libultrahdr tone-maps internally).")
+    p.add_argument("--adaptation", type=float, default=9.0,
+                   help="RCM DRT adaptation (mid-anchor nits), 0.01..30 (default: 9). "
+                        "Only used with --tonemap rcm_drt.")
     p.add_argument("--use-api3", action="store_true",
                    help="API-3 mode: App-0 JPEG tone map -> compressed SDR + raw HDR encode "
                         "(two-pass; gain map computed from JPEG-quantised SDR pixels)")
@@ -357,7 +360,7 @@ def main() -> int:
     t = lap(f"load TIFF ({W}x{H})", t)
 
     color.configure_sdr_tm_white(args.sdr_tm_white)
-    color.configure_sdr_tonemap(args.tonemap)
+    color.configure_sdr_tonemap(args.tonemap, args.adaptation, args.peak_nits)
 
     use_lut = (args.pipeline == "lut")
     gamut_compress = (args.gamut == "compress")

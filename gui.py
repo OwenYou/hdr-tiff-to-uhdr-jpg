@@ -19,6 +19,7 @@ PROJECT_DIR = Path(__file__).parent
 TONEMAP_LABELS = {
     "reinhard": "Reinhard",
     "clip":     "Clip",
+    "rcm_drt":  "RCM DRT",
 }
 TONEMAP_KEYS = {v: k for k, v in TONEMAP_LABELS.items()}
 
@@ -64,6 +65,8 @@ def _run_one(
         cmd += ["--pipeline", opts["pipeline"]]
     if opts.get("tonemap") and opts["tonemap"] != "reinhard":
         cmd += ["--tonemap", opts["tonemap"]]
+    if opts.get("tonemap") == "rcm_drt":
+        cmd += ["--adaptation", str(opts["adaptation"])]
     if opts.get("gamut") == "clip":
         cmd += ["--gamut", "clip"]
     if opts.get("force_rgb_gainmap"):
@@ -191,6 +194,7 @@ class App(TkinterDnD.Tk):
         self._pipeline_var    = tk.StringVar(value="LUT")
         self._gamut_var       = tk.StringVar(value="Compress (ACES RGC)")
         self._tonemap_var     = tk.StringVar(value=TONEMAP_LABELS["reinhard"])
+        self._adaptation_var  = tk.StringVar(value="9.00")
         self._force_rgb_gainmap_var = tk.BooleanVar(value=False)
         self._bw_sdr_var            = tk.BooleanVar(value=False)
 
@@ -228,6 +232,12 @@ class App(TkinterDnD.Tk):
         add_row(grp2, 1, "Peak nits (203–10000):", entry(grp2, self._peak_nits_var))
         add_row(grp2, 2, "SDR TM white (nits):",   entry(grp2, self._sdr_tm_white_var))
         add_row(grp2, 3, "Tone mapping:",          combo(grp2, self._tonemap_var, list(TONEMAP_LABELS.values()), 20))
+        self._adapt_label = ttk.Label(grp2, text="Adaptation (0.01–30):", anchor="e")
+        self._adapt_entry = entry(grp2, self._adaptation_var)
+        self._adapt_label.grid(row=2, column=2, sticky="e", padx=(8, 4), pady=2)
+        self._adapt_entry.grid(row=2, column=3, sticky="w", padx=(0, 16), pady=2)
+        self._tonemap_var.trace_add("write", lambda *_: self._sync_adaptation_visibility())
+        self._sync_adaptation_visibility()
         add_row(grp2, 4, "Gamut:",                 combo(grp2, self._gamut_var, ["Compress (ACES RGC)", "Clip"], 20))
 
         # 3. Others
@@ -278,6 +288,15 @@ class App(TkinterDnD.Tk):
             font=_mono_font, wrap="word",
         )
         self._log.pack(fill="both", expand=True, padx=4, pady=4)
+
+    def _sync_adaptation_visibility(self) -> None:
+        """Show the Adaptation field only when RCM DRT is selected."""
+        if TONEMAP_KEYS.get(self._tonemap_var.get()) == "rcm_drt":
+            self._adapt_label.grid()
+            self._adapt_entry.grid()
+        else:
+            self._adapt_label.grid_remove()
+            self._adapt_entry.grid_remove()
 
     # ── File-list helpers ────────────────────────────────────────────────────
 
@@ -338,6 +357,7 @@ class App(TkinterDnD.Tk):
             gg = float(self._gm_gamma_var.get())
             pn = float(self._peak_nits_var.get())
             stw = float(self._sdr_tm_white_var.get())
+            ad = float(self._adaptation_var.get())
             jb = int(self._jobs_var.get())
         except (ValueError, tk.TclError) as exc:
             raise ValueError(f"Invalid option value: {exc}") from exc
@@ -350,6 +370,7 @@ class App(TkinterDnD.Tk):
             "jobs":            max(1,     min(8,     jb)),
             "force":           self._force_var.get(),
             "pipeline":        self._pipeline_var.get().lower(),
+            "adaptation":      max(0.01, min(30.0, ad)),
             "tonemap":         TONEMAP_KEYS.get(self._tonemap_var.get(), "reinhard"),
             "gamut":           "clip" if self._gamut_var.get() == "Clip" else "compress",
             "force_rgb_gainmap": self._force_rgb_gainmap_var.get(),

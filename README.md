@@ -82,11 +82,15 @@ options:
                    BT.2020 → Display P3 out-of-gamut handling.
                    'compress' (default): ACES 1.3 Reference Gamut Compression (soft).
                    'clip': direct hard clip of negative P3 values after the gamut matrix.
-  --tonemap {reinhard,clip}
+  --tonemap {reinhard,clip,rcm_drt}
                    SDR base tone-map algorithm (default: reinhard). All curves act on
                    the max channel (hue-preserving) and are normalised to reach 1.0 at
                    the headroom set by --sdr-tm-white / --peak-nits. 'clip' = hard clip
-                   at the TM white. API-1 only; ignored with --use-api3.
+                   at the TM white. 'rcm_drt' = RCM DRT rational shoulder curve with
+                   Max Input = --peak-nits and Max Output = --sdr-tm-white, scaled so
+                   Max Input lands on the SDR full code value (see --adaptation).
+  --adaptation A   RCM DRT adaptation, 0.01-30 (default: 9): mid-anchor level in nits.
+                   Only used with --tonemap rcm_drt. API-1 only; ignored with --use-api3.
   --use-api3       Use the App-0 + API-3 two-pass pipeline instead of the default API-1
   --force-rgb-gainmap
                    Force 3-channel ISO 21496-1 gain map metadata (prevents channel
@@ -142,7 +146,8 @@ Options are organised into three groups in the GUI; the first two lay out their 
 | Gainmap gamma | > 0 | 1.0 | Encoding gamma applied to the gain map |
 | Peak nits | 203–10000 | 1000 | Target HDR display peak brightness |
 | SDR TM white | > 0 | 120 | Tone-map white point for the SDR base image in nits. Does not affect gain map computation (libultrahdr uses 203 nit internally). |
-| Tone mapping | Reinhard / Clip | Reinhard | SDR base tone-map algorithm (see `--tonemap`) |
+| Tone mapping | Reinhard / Clip / RCM DRT | Reinhard | SDR base tone-map algorithm (see `--tonemap`) |
+| Adaptation | 0.01–30 | 9.00 | RCM DRT mid-anchor level (nits). Only shown when Tone mapping is RCM DRT (`--adaptation`) |
 | Gamut | Compress / Clip | Compress (ACES RGC) | BT.2020→P3 out-of-gamut handling (see `--gamut`) |
 
 **Others**
@@ -296,7 +301,7 @@ scripts\_decode_check.bat
 |---|---|
 | `convert.py` | CLI entry point, `pack_rgba1010102`, API-1 / App-0 / API-3 encoder calls, `extract_primary_jpeg` |
 | `gui.py` | Batch GUI — wraps `convert.py` via `subprocess`, parallel jobs, progress/log display |
-| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888(bw=False)`: SDR tone map (`--tonemap {reinhard,clip}`, max-channel curve) (baked 65³ colour or grey LUT, or analytical NumPy); `bw=True` applies BT.709 luma weighting in linear light; `--pipeline {lut,parametric}` selects both |
+| `color.py` | `bt2020_pq_to_p3_pq`: BT.2020 PQ → Display P3 PQ, returns float32 (baked 97³ LUT or analytical); gamut handling selectable via `--gamut {compress,clip}`; `p3_pq_to_sdr_rgba8888(bw=False)`: SDR tone map (`--tonemap {reinhard,clip,rcm_drt}`, max-channel curve) (baked 65³ colour or grey LUT, or analytical NumPy); `bw=True` applies BT.709 luma weighting in linear light; `--pipeline {lut,parametric}` selects both |
 | `uhdr_ctypes.py` | `ctypes` bindings for libultrahdr (`uhdr.dll` / `libuhdr.dylib`); `UhdrRawImage` / `UhdrCompressedImage` structs |
 
 ## Output file structure

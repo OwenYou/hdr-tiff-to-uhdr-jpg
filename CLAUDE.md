@@ -40,8 +40,11 @@ uv run python convert.py <input.tif> <output.jpg> [--force] [--verbose]
 #                        HDR intent remains full colour. Implies --force-rgb-gainmap.
 #                        API-1 only; not compatible with --use-api3.
 #   --tonemap reinhard   SDR base tone-map curve: reinhard (default), clip (hard clip
-#                        at TM white). Max-channel,
+#                        at TM white), rcm_drt (rational shoulder; Max Input=--peak-nits,
+#                        Max Output=--sdr-tm-white, Max Input -> SDR full code;
+#                        see --adaptation 0.01..30, default 9). Max-channel,
 #                        hue-preserving, normalised to 1.0 at headroom. API-1 only.
+#   --adaptation 9       RCM DRT mid-anchor nits (only with --tonemap rcm_drt)
 #   --sdr-tm-white 120   Reinhard tone-map white point for the SDR base image in nits
 #                        (default: 120). Lower values brighten the SDR base on typical
 #                        consumer displays. Does NOT affect gain map computation —
