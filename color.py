@@ -14,9 +14,9 @@ _HDR_PEAK_NITS  = np.float32(10000.0)
 # ISO 21496-1.  This constant is kept as a reference so the 203/100 split is
 # visible in one place alongside _SDR_TM_WHITE_NITS.
 _SDR_WHITE_NITS = np.float32(203.0)
-# Target white level for the SDR base tone map only.  Set to 100 nit (typical
-# consumer display) rather than 203 nit so that diffuse white in the SDR image
-# maps to peak code value, giving a correct-looking result on SDR-only displays.
+# Target white level (nits) for the SDR base tone map only.  Default 120 nit
+# (typical consumer display) rather than 203 nit so that SDR-only displays show
+# a correctly bright result.  Overridden by configure_sdr_tm_white().
 # This does NOT affect the gain map: libultrahdr always uses 203 nit internally.
 _SDR_TM_WHITE_NITS = np.float32(120.0)
 
@@ -103,6 +103,11 @@ def _rcm_drt_curve(y: np.ndarray) -> np.ndarray:
     x = np.maximum(y, np.float32(0.0)) * np.float32(dst / 100.0)
     out = np.float32(c2) * x / (np.float32(1.0) + np.float32(c3) * x)
     return out * np.float32(100.0 / dst)
+
+
+def _sdr_headroom() -> float:
+    """Tone-map headroom: HDR container peak / SDR TM white (both in nits)."""
+    return float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)
 
 
 def _tonemap_linear(linear: np.ndarray, headroom: float) -> np.ndarray:
@@ -308,9 +313,9 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
     """Build (once) a fused OCIO CPU processor for the full P3 PQ → SDR tone mapping.
 
     Encodes the complete pipeline into a 65³ 3D LUT in PQ signal space so that
-    all five tone-map stages run in a single AVX-vectorised OCIO traversal:
-      PQ EOTF (10-bit signal → linear × headroom)
-      → configured max-channel tone curve (default Reinhard)
+    all tone-map stages run in a single AVX-vectorised OCIO traversal:
+      PQ EOTF (signal → linear × headroom)
+      → configured max-channel tone curve (see configure_sdr_tonemap)
       → γ 2.2 OETF (linear [0,1] → gamma-encoded [0,1])
 
     65 grid points per channel (spacing ≈ 0.016 in PQ signal) is sufficient for
@@ -321,16 +326,16 @@ def _build_tonemap_processor() -> OCIO.CPUProcessor:
         return _TONEMAP_PROC
 
     N = 65  # 65³ ≈ 274 K LUT samples; b varies fastest to match OCIO's layout
-    headroom    = float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)   # ≈ 100.0 (10000/100)
+    headroom    = _sdr_headroom()
 
     coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
     r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
     flat = np.stack([r_g.ravel(), g_g.ravel(), b_g.ravel()], axis=-1)  # (N³, 3)
 
-    # PQ EOTF → linear [0,1] (1.0 = 10 000 nits), then scale to Reinhard headroom
+    # PQ EOTF → linear [0,1] (1.0 = 10 000 nits), then scale to tone-map headroom
     linear = _pq_inv_oetf(flat) * np.float32(headroom)  # (N³, 3), range [0, headroom]
 
-    # Reinhard tone mapping (ReinhardMap in jpegr.cpp)
+    # Configured SDR tone curve (reinhard / clip / rcm_drt)
     sdr = _tonemap_linear(linear, headroom)
 
     # γ 2.2 OETF: linear [0,1] → gamma-encoded [0,1]
@@ -359,7 +364,7 @@ def _build_tonemap_grey_processor() -> OCIO.CPUProcessor:
     """Build (once) a fused 65³ LUT for P3 PQ -> greyscale SDR tone mapping.
 
     Identical to _build_tonemap_processor but applies BT.709 luma weighting
-    in linear light (after Reinhard, before γ2.2) so all three output channels
+    in linear light (after the tone curve, before γ2.2) so all three output channels
     carry R=G=B=luma.  The RGBA8888 pack step then produces a true greyscale
     image with no additional post-processing required.
     """
@@ -368,7 +373,7 @@ def _build_tonemap_grey_processor() -> OCIO.CPUProcessor:
         return _TONEMAP_GREY_PROC
 
     N = 65
-    headroom    = float(_HDR_PEAK_NITS / _SDR_TM_WHITE_NITS)
+    headroom    = _sdr_headroom()
 
     coords = np.linspace(0.0, 1.0, N, dtype=np.float32)
     r_g, g_g, b_g = np.meshgrid(coords, coords, coords, indexing='ij')
@@ -445,13 +450,12 @@ def p3_pq_to_sdr_rgba8888(
 ) -> tuple[np.ndarray, dict[str, float]]:
     """Display P3 PQ float32 (H,W,3) in [0,1] → RGBA8888 uint32 (H,W).
 
-    Replicates the Reinhard tone mapper that libultrahdr applies internally during App-0
-    (ReinhardMap in jpegr.cpp), operating on the same PQ signal values.
+    Applies the SDR tone curve selected by configure_sdr_tonemap() (default
+    Reinhard, which replicates libultrahdr's internal ReinhardMap from App-0).
 
     use_lut=True  (default): fused OCIO 3D LUT with tetrahedral interpolation —
-      PQ EOTF × headroom + Reinhard + γ 2.2 OETF in one AVX pass.
-    use_lut=False (parametric): explicit NumPy steps that exactly reproduce the
-      libultrahdr formulae; slower but no LUT approximation.
+      PQ EOTF × headroom + tone curve + γ 2.2 OETF in one AVX pass.
+    use_lut=False (parametric): explicit NumPy steps (same math as the LUT bake); slower but no LUT approximation.
     bw=True: desaturate to BT.709 luma greyscale in linear light before γ 2.2.
       In lut mode a separate pre-baked 65³ LUT is used — no post-processing needed.
 
@@ -475,22 +479,22 @@ def p3_pq_to_sdr_rgba8888(
     f32 = np.ascontiguousarray(p3_pq_f32)
 
     if use_lut:
-        # Fused OCIO 3D LUT: PQ EOTF + Reinhard [+ luma] + γ 2.2 OETF in one AVX pass.
+        # Fused OCIO 3D LUT: PQ EOTF + tone curve [+ luma] + γ 2.2 OETF in one AVX pass.
         # f32 is modified in-place; output is SDR gamma-encoded values in [0, 1].
         t = time.perf_counter()
         img = OCIO.PackedImageDesc(f32, W, H, OCIO.CHANNEL_ORDERING_RGB)
         proc.apply(img)
         timings["ocio_lut3d"] = time.perf_counter() - t
     else:
-        # Parametric path: explicit NumPy steps matching libultrahdr's formulae exactly.
+        # Parametric path: explicit NumPy steps, no LUT approximation.
         t = time.perf_counter()
         linear = _pq_inv_oetf(f32)
         timings["pq_decode"] = time.perf_counter() - t
 
         t = time.perf_counter()
-        headroom = _HDR_PEAK_NITS / _SDR_TM_WHITE_NITS
+        headroom = _sdr_headroom()
         f32 = _tonemap_linear(linear * headroom, headroom)
-        timings["reinhard"] = time.perf_counter() - t
+        timings[f"tonemap_{_SDR_TONEMAP}"] = time.perf_counter() - t
 
         if bw:
             t = time.perf_counter()
@@ -502,7 +506,7 @@ def p3_pq_to_sdr_rgba8888(
 
         t = time.perf_counter()
         f32 = np.power(f32, np.float32(1.0 / 2.2))
-        timings["srgb_oetf"] = time.perf_counter() - t
+        timings["gamma22_oetf"] = time.perf_counter() - t
 
     # Quantise to uint8 and pack as RGBA8888 (R@byte0, G@byte1, B@byte2, A=255@byte3).
     # Scale f32 in-place (out=) to avoid 3 × 414 MB float temporaries from the

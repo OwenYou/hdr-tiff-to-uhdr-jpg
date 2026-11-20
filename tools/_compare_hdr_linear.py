@@ -422,8 +422,7 @@ def main():
     # 8. Diagnose JPEG quantisation loss in SDR base
     # ------------------------------------------------------------------
     print("\n--- JPEG SDR base quantisation check ---")
-    # Reconstruct what the SDR should be: Reinhard tone map of P3 PQ
-    # Instead, compare the reconstructed HDR at gainmap_weight=0 (pure SDR decode)
+    # Compare the reconstructed HDR at gainmap_weight=0 (pure SDR decode)
     # against the γ2.2 SDR base.
     uhdr_sdr_only = reconstruct_hdr_linear_p3(
         sdr_arr, gm_arr, meta, display_boost_log2=bh  # weight=0
@@ -431,7 +430,7 @@ def main():
     print(f"  SDR base (gainmap_weight=0) peak nits: {uhdr_sdr_only.max():.1f}")
     print(f"  SDR base p99 nits: {np.percentile(uhdr_sdr_only.max(axis=-1), 99):.1f}")
     print(f"  (SDR white = {_SDR_WHITE:.0f} nits; values > {_SDR_WHITE:.0f} indicate"
-          f" Reinhard headroom bleed-through)")
+          f" tone-map headroom bleed-through)")
 
     # ------------------------------------------------------------------
     # 9. Summary

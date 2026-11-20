@@ -2,8 +2,8 @@
 
 Default pipeline (API-1):
   1. Convert BT.2020 PQ -> Display P3 PQ (ACES 1.3 gamut compression).
-  2. Python Reinhard tone map (replicating libultrahdr's internal ReinhardMap)
-     converts the P3 PQ image to raw RGBA8888 SDR pixels — no JPEG encode/decode.
+  2. Python SDR tone map (--tonemap: Reinhard [default, replicates libultrahdr's
+     ReinhardMap], clip or rcm_drt) converts the P3 PQ image to raw RGBA8888 SDR pixels — no JPEG encode/decode.
   3. API-1: feed raw P3 PQ HDR + raw P3 sRGB SDR; libultrahdr computes the
      gain map from unquantised pixels, then encodes both layers.
   The gain map benefits from a cleaner SDR input (no DCT block artefacts).
@@ -18,7 +18,7 @@ With --use-api3 (API-3 path):
      final UHDR JPEG.
 
 With --bw-sdr (API-1 only):
-  After the Reinhard tone map, the colour SDR image is desaturated to a
+  After the tone map, the colour SDR image is desaturated to a
   luma-only greyscale (BT.709 coefficients in linear light) before encoding.
   The HDR intent remains full colour.  --force-rgb-gainmap is automatically
   enabled because a greyscale SDR + colour HDR produces symmetric per-channel
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
                         "SDR tone-map steps.  'lut' (default): both steps use a baked "
                         "OCIO 3D LUT with tetrahedral interpolation (fast).  "
                         "'parametric': gamut uses the per-pixel analytical OCIO pipeline; "
-                        "tone map uses explicit NumPy Reinhard steps (slow, no LUT "
+                        "tone map uses explicit NumPy steps (slow, no LUT "
                         "approximation)")
     p.add_argument("--gamut", choices=["compress", "clip"], default="compress",
                    help="Gamut handling for BT.2020 → Display P3. "
@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
                         "UHDR JPEG. Implies --force-rgb-gainmap. Not compatible with --use-api3.")
     p.add_argument("--sdr-tm-white", type=float, default=120.0,
                    help="SDR base tone-map white point in nits (default: 120). "
-                        "Sets the Reinhard headroom for the SDR base image only. "
+                        "Sets the tone-map white (headroom) for the SDR base image only. "
                         "Does not affect gain map computation (libultrahdr always "
                         "uses 203 nit internally).")
     p.add_argument("--force", "-f", action="store_true",
@@ -386,7 +386,7 @@ def main() -> int:
         jpg = _encode_api3(packed_p3_hdr, sdr_jpeg, args)
         t = lap(f"API-3 encode ({len(jpg)/1e3:.0f} KB)", t)
     else:
-        # Default API-1 path: Python Reinhard tone map -> raw HDR + raw SDR -> libultrahdr
+        # Default API-1 path: Python SDR tone map (--tonemap) -> raw HDR + raw SDR -> libultrahdr
         # pack_rgba1010102 is already done; pass f32 directly (OCIO will modify it in-place)
         sdr_rgba8888, tm_timings = color.p3_pq_to_sdr_rgba8888(
             p3_pq_f32, use_lut=use_lut, bw=args.bw_sdr
